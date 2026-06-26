@@ -4,9 +4,11 @@ from typing import Iterable, Mapping, Optional
 import requests
 
 from football_analytics.config import BASE_URL, HEADERS
+from football_analytics.modeling import build_empirical_bayes_shot_rate_pandas_udf
 
 BRONZE_FOOTBALL_MATCH_RAW_PATH = "/mnt/syndicate/bronze/football_match_raw"
 SILVER_PLAYER_MATCH_STATS_PATH = "/mnt/syndicate/silver/football_player_match_stats"
+GOLD_PLAYER_SAPM_PATH = "/mnt/syndicate/gold/football_player_sapm"
 
 ACCENTED_CHARS = (
     "ÀÁÂÃÄÅĀĂĄÇĆČÐĎÈÉÊËĒĔĖĘĚÌÍÎÏĪĮİŁÑŃŇÒÓÔÕÖØŌŐŘŚŞŠÙÚÛÜŪŮŰÝŸŽŹŻ"
@@ -219,3 +221,103 @@ def transform_bronze_to_silver(
 
     silver.write.format("delta").mode(mode).save(silver_path)
     return silver
+
+
+def transform_silver_to_gold_sapm(
+    spark,
+    *,
+    silver_path: str = SILVER_PLAYER_MATCH_STATS_PATH,
+    position_prior_path: Optional[str] = None,
+    fixture_context_path: Optional[str] = None,
+    gold_path: str = GOLD_PLAYER_SAPM_PATH,
+    mode: str = "overwrite",
+):
+    """
+    Builds Gold-ready S-APM features from Silver player-match rows.
+
+    Optional context Delta inputs can provide position-level alpha/beta priors
+    and fixture-level stake/opponent weights. Missing context defaults to
+    neutral priors and weights so the transform remains deterministic.
+    """
+    F, *_ = _require_pyspark()
+    smoothed_shot_rate_udf = build_empirical_bayes_shot_rate_pandas_udf()
+
+    silver = spark.read.format("delta").load(silver_path)
+    enriched = silver.withColumn(
+        "position_group",
+        F.when(F.upper(F.col("games_position")).isin("F", "A", "ATTACKER", "FORWARD", "STRIKER"), F.lit("F"))
+        .when(F.upper(F.col("games_position")).isin("D", "DEFENDER", "DEFENCE"), F.lit("D"))
+        .when(F.upper(F.col("games_position")).isin("G", "GK", "GOALKEEPER"), F.lit("G"))
+        .otherwise(F.lit("M")),
+    )
+
+    if position_prior_path:
+        priors = spark.read.format("delta").load(position_prior_path).select(
+            "position_group",
+            F.col("alpha").cast("double").alias("prior_alpha"),
+            F.col("beta").cast("double").alias("prior_beta"),
+        )
+        enriched = enriched.join(priors, "position_group", "left")
+    else:
+        enriched = (
+            enriched
+            .withColumn(
+                "prior_alpha",
+                F.when(F.col("position_group") == "F", F.lit(2.6 * 3.0))
+                .when(F.col("position_group") == "M", F.lit(1.2 * 3.0))
+                .when(F.col("position_group") == "D", F.lit(0.5 * 3.0))
+                .otherwise(F.lit(0.0)),
+            )
+            .withColumn("prior_beta", F.lit(270.0))
+        )
+
+    if fixture_context_path:
+        context = spark.read.format("delta").load(fixture_context_path).select(
+            F.col("fixture_id").cast("int").alias("context_fixture_id"),
+            F.col("game_importance_scalar").cast("double"),
+            F.col("opponent_strength_adjustment").cast("double"),
+            F.col("defensive_containment_rating").cast("double"),
+            F.col("defensive_elo").cast("double"),
+        )
+        enriched = enriched.join(
+            context,
+            enriched.fixture_id == context.context_fixture_id,
+            "left",
+        ).drop("context_fixture_id")
+    else:
+        enriched = (
+            enriched
+            .withColumn("game_importance_scalar", F.lit(1.0))
+            .withColumn("opponent_strength_adjustment", F.lit(1.0))
+            .withColumn("defensive_containment_rating", F.lit(1.0))
+            .withColumn("defensive_elo", F.lit(1500.0))
+        )
+
+    gold = (
+        enriched
+        .withColumn("prior_alpha", F.coalesce(F.col("prior_alpha"), F.lit(0.0)))
+        .withColumn("prior_beta", F.coalesce(F.col("prior_beta"), F.lit(270.0)))
+        .withColumn("game_importance_scalar", F.coalesce(F.col("game_importance_scalar"), F.lit(1.0)))
+        .withColumn("opponent_strength_adjustment", F.coalesce(F.col("opponent_strength_adjustment"), F.lit(1.0)))
+        .withColumn("shot_rate_smoothed_per_minute", smoothed_shot_rate_udf(
+            F.col("shots_total"),
+            F.col("games_minutes"),
+            F.col("prior_alpha"),
+            F.col("prior_beta"),
+        ))
+        .withColumn(
+            "sapm_interaction_weight",
+            F.col("game_importance_scalar") * F.col("opponent_strength_adjustment"),
+        )
+        .withColumn(
+            "weighted_shots",
+            F.col("sapm_interaction_weight") * F.col("shots_total"),
+        )
+        .withColumn(
+            "weighted_minutes",
+            F.col("sapm_interaction_weight") * F.col("games_minutes"),
+        )
+    )
+
+    gold.write.format("delta").mode(mode).save(gold_path)
+    return gold
