@@ -1,11 +1,25 @@
 import json
+import math
 import os
 import unicodedata
 from datetime import date
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 from football_analytics.config import POSITIONAL_PRIORS, RECENCY_HALF_LIFE_DAYS
+
+STAKE_WEIGHTS = {
+    "world cup group stage": 1.0,
+    "world cup": 1.0,
+    "qualifier": 0.7,
+    "qualifiers": 0.7,
+    "friendly": 0.2,
+    "friendly matches": 0.2,
+}
+
+DEFAULT_DEFENSIVE_ELO = 1500.0
+ELO_ANCHOR_DIVISOR = 900.0
+CONTAINMENT_BOUNDS = (0.5, 1.5)
 
 
 def normalize_player_name(value: str) -> str:
@@ -14,10 +28,116 @@ def normalize_player_name(value: str) -> str:
     text = "".join(char for char in text if not unicodedata.combining(char))
     return " ".join(text.casefold().split())
 
+
+def game_importance_scalar(competition_label: Optional[str]) -> float:
+    """Maps fixture stakes to the S-APM game-importance scalar."""
+    key = normalize_player_name(competition_label)
+    if not key:
+        return 1.0
+    for label, weight in STAKE_WEIGHTS.items():
+        if label in key:
+            return weight
+    return 1.0
+
+
+def opponent_strength_adjustment(
+    defensive_elo: float = DEFAULT_DEFENSIVE_ELO,
+    containment_rating: float = 1.0,
+) -> float:
+    """
+    Converts opponent defensive quality into a shot-context weight.
+
+    Higher defensive ELO and lower containment factors make generated shots more
+    expensive, so they receive a larger S-APM denominator/credit weight.
+    """
+    elo = defensive_elo if defensive_elo is not None else DEFAULT_DEFENSIVE_ELO
+    containment = containment_rating if containment_rating and containment_rating > 0 else 1.0
+    elo_component = math.exp((float(elo) - DEFAULT_DEFENSIVE_ELO) / ELO_ANCHOR_DIVISOR)
+    return float(np.clip(elo_component / containment, 0.5, 1.8))
+
+
+def _defensive_elo_containment_anchor(defensive_elo: float = DEFAULT_DEFENSIVE_ELO) -> float:
+    elo = defensive_elo if defensive_elo is not None else DEFAULT_DEFENSIVE_ELO
+    return float(math.exp((DEFAULT_DEFENSIVE_ELO - float(elo)) / ELO_ANCHOR_DIVISOR))
+
+
+def estimate_position_group_priors(
+    history_df: pd.DataFrame,
+    *,
+    prior_minutes: float = 270.0,
+) -> Dict[str, Dict[str, float]]:
+    """
+    Derives Empirical Bayes alpha/beta parameters by position group.
+
+    Alpha is expected shots over the prior exposure and beta is prior minutes,
+    matching lambda_smoothed = (alpha + shots) / (beta + minutes).
+    """
+    priors: Dict[str, Dict[str, float]] = {}
+    for pos_key, fallback in POSITIONAL_PRIORS.items():
+        if history_df is None or history_df.empty or "games_position" not in history_df:
+            rate_per_minute = fallback["shots"] / 90.0
+        else:
+            normalized = history_df.copy()
+            normalized["_pos_key"] = normalized["games_position"].map(map_position)
+            group = normalized[normalized["_pos_key"] == pos_key]
+            minutes = float(group.get("games_minutes", pd.Series(dtype=float)).sum())
+            shots = float(group.get("shots_total", pd.Series(dtype=float)).sum())
+            rate_per_minute = shots / minutes if minutes > 0 else fallback["shots"] / 90.0
+        priors[pos_key] = {
+            "alpha": rate_per_minute * prior_minutes,
+            "beta": float(prior_minutes),
+        }
+    return priors
+
+
+def empirical_bayes_smoothed_shot_rate(
+    observed_shots: pd.Series,
+    minutes_played: pd.Series,
+    alpha: pd.Series,
+    beta: pd.Series,
+) -> pd.Series:
+    """Vectorized Empirical Bayes shot-rate shrinkage in shots per minute."""
+    denominator = beta.astype(float) + minutes_played.astype(float)
+    numerator = alpha.astype(float) + observed_shots.astype(float)
+    return (numerator / denominator.replace(0, np.nan)).fillna(0.0)
+
+
+def build_empirical_bayes_shot_rate_pandas_udf():
+    """
+    Builds the Databricks Pandas UDF for distributed Silver-to-Gold shrinkage.
+
+    The import is intentionally lazy so local modeling tests do not require a
+    Spark installation.
+    """
+    try:
+        from pyspark.sql.functions import pandas_udf
+        from pyspark.sql.types import DoubleType
+    except ImportError as error:
+        raise RuntimeError(
+            "PySpark is required to build the Empirical Bayes Pandas UDF."
+        ) from error
+
+    @pandas_udf(DoubleType())
+    def smoothed_shot_rate_udf(
+        observed_shots: pd.Series,
+        minutes_played: pd.Series,
+        alpha: pd.Series,
+        beta: pd.Series,
+    ) -> pd.Series:
+        return empirical_bayes_smoothed_shot_rate(
+            observed_shots,
+            minutes_played,
+            alpha,
+            beta,
+        )
+
+    return smoothed_shot_rate_udf
+
 def calculate_common_opponent_modifiers(
     team_home: str, 
     team_away: str, 
-    database_path: str = "world_cup_2026_completed_data.json"
+    database_path: str = "world_cup_2026_completed_data.json",
+    defensive_elo_ratings: Optional[Dict[str, float]] = None,
 ) -> Tuple[float, float]:
     """
     Calculates independent defensive containment ratings for both teams.
@@ -75,6 +195,8 @@ def calculate_common_opponent_modifiers(
         team_opponents.setdefault(home, {}).setdefault(away, []).append(fid)
         # Track away's opponent
         team_opponents.setdefault(away, {}).setdefault(home, []).append(fid)
+
+    defensive_elo_ratings = defensive_elo_ratings or {}
 
     # Find mutual opponents of team_home and team_away
     home_opps = set(team_opponents.get(team_home, {}).keys())
@@ -141,20 +263,26 @@ def calculate_common_opponent_modifiers(
             return 1.0
         return actual_shots_allowed / expected_shots_allowed
 
-    home_def_factor = calculate_team_defensive_factor(
+    home_network_factor = calculate_team_defensive_factor(
         team_home,
         mutual_opponents,
     )
-    away_def_factor = calculate_team_defensive_factor(
+    away_network_factor = calculate_team_defensive_factor(
         team_away,
         mutual_opponents,
     )
+    home_def_factor = home_network_factor * _defensive_elo_containment_anchor(
+        defensive_elo_ratings.get(team_home, DEFAULT_DEFENSIVE_ELO)
+    )
+    away_def_factor = away_network_factor * _defensive_elo_containment_anchor(
+        defensive_elo_ratings.get(team_away, DEFAULT_DEFENSIVE_ELO)
+    )
 
     # Clip to standard thresholds [0.5, 1.5] to prevent mathematical instability
-    home_def_factor = float(np.clip(home_def_factor, 0.5, 1.5))
-    away_def_factor = float(np.clip(away_def_factor, 0.5, 1.5))
+    home_def_factor = float(np.clip(home_def_factor, *CONTAINMENT_BOUNDS))
+    away_def_factor = float(np.clip(away_def_factor, *CONTAINMENT_BOUNDS))
 
-    print(f"Calculated Common-Opponent defensive containment rating:")
+    print(f"Calculated ELO-anchored asymmetric defensive containment rating:")
     print(f" - {team_home} containment (reduces opponent shot rate to): {home_def_factor:.4f}")
     print(f" - {team_away} containment (reduces opponent shot rate to): {away_def_factor:.4f}")
 
@@ -293,6 +421,53 @@ def run_player_monte_carlo(
         "mean_goals": float(np.mean(sim_goals)),
         "mean_missed": float(np.mean(sim_missed)),
         "any_shot_probability": float(np.mean(sim_shots > 0)),
+    }
+
+
+def calculate_game_weighted_sapm(
+    player_segments: pd.DataFrame,
+    *,
+    defensive_elo_by_opponent: Optional[Dict[str, float]] = None,
+    containment_by_opponent: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """
+    Calculates normalized game-weighted Shot Adjusted Plus-Minus.
+
+    Expected columns are opponent, competition, shots_on_pitch,
+    minutes_on_pitch, shots_off_pitch, and minutes_off_pitch.
+    """
+    if player_segments is None or player_segments.empty:
+        return {"sapm_adjusted": 1.0, "on_rate": 0.0, "off_rate": 0.0}
+
+    defensive_elo_by_opponent = defensive_elo_by_opponent or {}
+    containment_by_opponent = containment_by_opponent or {}
+    weighted = player_segments.copy()
+    competitions = weighted["competition"] if "competition" in weighted else pd.Series("", index=weighted.index)
+    opponents = weighted["opponent"] if "opponent" in weighted else pd.Series("", index=weighted.index)
+    weighted["_stake_weight"] = competitions.map(game_importance_scalar)
+    weighted["_opp_weight"] = opponents.map(
+        lambda opponent: opponent_strength_adjustment(
+            defensive_elo_by_opponent.get(opponent, DEFAULT_DEFENSIVE_ELO),
+            containment_by_opponent.get(opponent, 1.0),
+        )
+    )
+    weighted["_weight"] = weighted["_stake_weight"] * weighted["_opp_weight"]
+
+    on_minutes = float((weighted["_weight"] * weighted["minutes_on_pitch"]).sum())
+    off_minutes = float((weighted["_weight"] * weighted["minutes_off_pitch"]).sum())
+    on_shots = float((weighted["_weight"] * weighted["shots_on_pitch"]).sum())
+    off_shots = float((weighted["_weight"] * weighted["shots_off_pitch"]).sum())
+
+    on_rate = on_shots / on_minutes if on_minutes > 0 else 0.0
+    off_rate = off_shots / off_minutes if off_minutes > 0 else 0.0
+    sapm = on_rate / off_rate if off_rate > 0 else float("inf")
+
+    return {
+        "sapm_adjusted": float(sapm),
+        "on_rate": float(on_rate),
+        "off_rate": float(off_rate),
+        "weighted_on_minutes": on_minutes,
+        "weighted_off_minutes": off_minutes,
     }
 
 
