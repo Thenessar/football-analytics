@@ -13,6 +13,8 @@ if API_KEY:
 
 # Local cache settings for testing & minimizing redundant API requests
 CACHE_FILE = "world_cup_2026_completed_data.json"
+HISTORICAL_ANCHOR_DATE = "2022-11-07"
+RECENCY_HALF_LIFE_DAYS = 365
 
 # ==============================================================================
 # Quantitative Modeling & Prior Configs

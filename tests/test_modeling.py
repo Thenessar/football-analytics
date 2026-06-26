@@ -3,6 +3,7 @@ import json
 import pandas as pd
 
 from football_analytics.modeling import (
+    add_recency_weights,
     calculate_common_opponent_modifiers,
     calculate_game_weighted_sapm,
     empirical_bayes_smoothed_shot_rate,
@@ -219,6 +220,63 @@ def test_bayesian_smoothing_and_monte_carlo():
     assert len(res["sim_goals"]) == 1000
     assert len(res["sim_missed"]) == 1000
     assert 0.0 <= res["any_shot_probability"] <= 1.0
+
+
+def test_recency_decay_penalizes_old_shooting_volume():
+    history = pd.DataFrame([
+        {
+            "fixture_date": "2023-06-26T00:00:00+00:00",
+            "games_minutes": 90,
+            "shots_total": 9,
+            "shots_on": 6,
+            "goals_total": 3,
+        },
+        {
+            "fixture_date": "2026-06-12T00:00:00+00:00",
+            "games_minutes": 90,
+            "shots_total": 0,
+            "shots_on": 0,
+            "goals_total": 0,
+        },
+        {
+            "fixture_date": "2026-06-19T00:00:00+00:00",
+            "games_minutes": 90,
+            "shots_total": 1,
+            "shots_on": 0,
+            "goals_total": 0,
+        },
+        {
+            "fixture_date": "2026-06-25T00:00:00+00:00",
+            "games_minutes": 90,
+            "shots_total": 0,
+            "shots_on": 0,
+            "goals_total": 0,
+        },
+    ])
+
+    weighted = add_recency_weights(history, "2026-06-26", half_life_days=365)
+    assert weighted.iloc[0]["recency_weight"] < 0.13
+    assert weighted.iloc[-1]["recency_weight"] > 0.99
+
+    decayed = run_player_monte_carlo(
+        player_name="Aging Finisher",
+        position="F",
+        player_history=history,
+        opp_def_factor=1.0,
+        sims=100,
+        target_date="2026-06-26",
+        recency_half_life_days=365,
+    )
+    unweighted = run_player_monte_carlo(
+        player_name="Aging Finisher",
+        position="F",
+        player_history=history.drop(columns=["fixture_date"]),
+        opp_def_factor=1.0,
+        sims=100,
+    )
+
+    assert decayed["adjusted_lambda"] < unweighted["adjusted_lambda"]
+    assert decayed["minutes_played"] < unweighted["minutes_played"]
 
 
 def test_squad_history_join_is_accent_insensitive():

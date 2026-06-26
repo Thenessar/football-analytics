@@ -18,6 +18,19 @@ def test_resolve_team_id(offline_pipeline):
     assert ger_id == 25
     assert ecu_id == 2382
 
+
+def test_backfill_date_chunks_start_at_2022_anchor():
+    chunks = FootballDataPipeline.iter_date_chunks(
+        start_date="2022-11-07",
+        end_date="2022-11-20",
+        chunk_days=7,
+    )
+
+    assert chunks == [
+        {"date_from": "2022-11-07", "date_to": "2022-11-13"},
+        {"date_from": "2022-11-14", "date_to": "2022-11-20"},
+    ]
+
 def test_load_historical_team_stats(offline_pipeline):
     """Verifies that stats are loaded, minimized, and nulls are cleaned to 0."""
     df_ger = offline_pipeline.load_historical_team_stats("Germany", limit=5)
