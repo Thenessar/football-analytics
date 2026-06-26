@@ -1,10 +1,11 @@
 import json
 import os
 import unicodedata
+from datetime import date
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Any
-from football_analytics.config import POSITIONAL_PRIORS
+from football_analytics.config import POSITIONAL_PRIORS, RECENCY_HALF_LIFE_DAYS
 
 
 def normalize_player_name(value: str) -> str:
@@ -177,12 +178,42 @@ def map_position(pos_str: str) -> str:
     return 'M'
 
 
+def add_recency_weights(
+    player_history: pd.DataFrame,
+    target_date: str | date | pd.Timestamp | None,
+    half_life_days: float = RECENCY_HALF_LIFE_DAYS,
+) -> pd.DataFrame:
+    """Adds exponential half-life weights using fixture_date relative to target_date."""
+    if player_history is None or player_history.empty or target_date is None:
+        weighted = player_history.copy() if player_history is not None else pd.DataFrame()
+        if not weighted.empty:
+            weighted["recency_weight"] = 1.0
+        return weighted
+    if half_life_days <= 0:
+        raise ValueError("half_life_days must be positive")
+
+    weighted = player_history.copy()
+    if "fixture_date" not in weighted.columns:
+        weighted["recency_weight"] = 1.0
+        return weighted
+
+    target_ts = pd.to_datetime(target_date, utc=True)
+    fixture_dates = pd.to_datetime(weighted["fixture_date"], utc=True, errors="coerce")
+    age_days = (target_ts - fixture_dates).dt.total_seconds() / 86400.0
+    age_days = age_days.clip(lower=0).fillna(0.0)
+    decay_lambda = np.log(2.0) / float(half_life_days)
+    weighted["recency_weight"] = np.exp(-decay_lambda * age_days)
+    return weighted
+
+
 def run_player_monte_carlo(
     player_name: str,
     position: str,
     player_history: pd.DataFrame,
     opp_def_factor: float,
-    sims: int = 10000
+    sims: int = 10000,
+    target_date: str | date | pd.Timestamp | None = None,
+    recency_half_life_days: float = RECENCY_HALF_LIFE_DAYS,
 ) -> Dict[str, Any]:
     """Runs a Bayesian-smoothed Monte Carlo simulation for a single starting player."""
     pos_key = map_position(position)
@@ -190,14 +221,24 @@ def run_player_monte_carlo(
     
     # 1. Bayesian Positional Smoothing Matrix Calculations
     if player_history is not None and not player_history.empty:
-        # Sum total minutes played in historical window
-        mins_played = player_history['games_minutes'].sum()
+        player_history = add_recency_weights(
+            player_history,
+            target_date,
+            recency_half_life_days,
+        )
+        recency_weight = (
+            player_history["recency_weight"]
+            if "recency_weight" in player_history.columns
+            else 1.0
+        )
+        # Sum total minutes played in historical window after recency decay
+        mins_played = (player_history['games_minutes'] * recency_weight).sum()
         # Full validation requires 5 games (450 minutes)
         weight = min(1.0, mins_played / 450.0)
-        
-        total_shots = player_history['shots_total'].sum()
-        total_sot = player_history['shots_on'].sum()
-        total_goals = player_history['goals_total'].sum()
+
+        total_shots = (player_history['shots_total'] * recency_weight).sum()
+        total_sot = (player_history['shots_on'] * recency_weight).sum()
+        total_goals = (player_history['goals_total'] * recency_weight).sum()
         
         emp_shots_per_90 = (total_shots / mins_played) * 90 if mins_played > 0 else prior["shots"]
         emp_sot_pct = total_sot / total_shots if total_shots > 0 else prior["sot_pct"]
@@ -236,7 +277,7 @@ def run_player_monte_carlo(
     return {
         "player_name": player_name,
         "position": pos_key,
-        "minutes_played": mins_played,
+        "minutes_played": float(mins_played),
         "smoothing_weight": weight,
         "adjusted_lambda": adjusted_shot_lambda,
         "sot_pct": sot_pct,
@@ -259,7 +300,9 @@ def run_squad_simulation(
     lineup: List[Dict[str, Any]], 
     history_df: pd.DataFrame, 
     opp_def_factor: float, 
-    sims: int = 10000
+    sims: int = 10000,
+    target_date: str | date | pd.Timestamp | None = None,
+    recency_half_life_days: float = RECENCY_HALF_LIFE_DAYS,
 ) -> List[Dict[str, Any]]:
     """Runs Monte Carlo simulations for an entire starting XI lineup."""
     results = []
@@ -279,7 +322,15 @@ def run_squad_simulation(
             if not normalized_history.empty
             else None
         )
-        res = run_player_monte_carlo(p_name, pos, p_history, opp_def_factor, sims=sims)
+        res = run_player_monte_carlo(
+            p_name,
+            pos,
+            p_history,
+            opp_def_factor,
+            sims=sims,
+            target_date=target_date,
+            recency_half_life_days=recency_half_life_days,
+        )
         res["team"] = member.get("team", "")
         results.append(res)
     return results

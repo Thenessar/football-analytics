@@ -6,7 +6,12 @@ import unicodedata
 import requests
 import pandas as pd
 from typing import Dict, List, Optional
-from football_analytics.config import BASE_URL, HEADERS, CACHE_FILE
+from football_analytics.config import (
+    BASE_URL,
+    CACHE_FILE,
+    HEADERS,
+    HISTORICAL_ANCHOR_DATE,
+)
 
 
 class ConfirmedLineupDataError(RuntimeError):
@@ -65,6 +70,137 @@ class FootballDataPipeline:
                 json.dump(self.cache, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"Error saving cache: {e}")
+
+    @staticmethod
+    def iter_date_chunks(
+        start_date: str = HISTORICAL_ANCHOR_DATE,
+        end_date: Optional[str] = None,
+        chunk_days: int = 7,
+    ) -> List[Dict[str, str]]:
+        """Builds inclusive date chunks for historical backfill jobs."""
+        if chunk_days < 1:
+            raise ValueError("chunk_days must be >= 1")
+        start = datetime.date.fromisoformat(start_date)
+        end = (
+            datetime.date.fromisoformat(end_date)
+            if end_date
+            else datetime.date.today()
+        )
+        if end < start:
+            raise ValueError("end_date must be on or after start_date")
+
+        chunks = []
+        cursor = start
+        while cursor <= end:
+            chunk_end = min(cursor + datetime.timedelta(days=chunk_days - 1), end)
+            chunks.append({
+                "date_from": cursor.isoformat(),
+                "date_to": chunk_end.isoformat(),
+            })
+            cursor = chunk_end + datetime.timedelta(days=1)
+        return chunks
+
+    def fetch_international_fixtures_by_date(
+        self,
+        match_date: str,
+        completed_only: bool = True,
+    ) -> List[Dict]:
+        """Fetches all international fixtures for a UTC date."""
+        if self.offline:
+            fixtures = []
+            for fixture_id, match_data in self.cache.items():
+                match_info = match_data.get("match_info", {})
+                if str(match_info.get("date") or "")[:10] != match_date:
+                    continue
+                fixtures.append({
+                    "fixture": {
+                        "id": int(fixture_id),
+                        "date": match_info.get("date"),
+                        "status": {"short": "FT"},
+                    },
+                    "league": match_info.get("league", {}),
+                    "teams": {
+                        "home": {"name": match_info.get("home_team")},
+                        "away": {"name": match_info.get("away_team")},
+                    },
+                    "goals": match_info.get("score", {}),
+                    "score": {"fulltime": match_info.get("score", {})},
+                })
+            return fixtures
+
+        url = f"{self.base_url}/fixtures"
+        params = {"date": match_date, "timezone": "UTC"}
+        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("errors"):
+            raise Exception(f"API Error: {data['errors']}")
+
+        fixtures = data.get("response", [])
+        if not completed_only:
+            return fixtures
+        return [
+            fixture
+            for fixture in fixtures
+            if ((fixture.get("fixture") or {}).get("status") or {}).get("short")
+            in {"FT", "AET", "PEN"}
+        ]
+
+    def backfill_international_fixtures(
+        self,
+        start_date: str = HISTORICAL_ANCHOR_DATE,
+        end_date: Optional[str] = None,
+        chunk_days: int = 7,
+        sleep_seconds: float = 1.0,
+    ) -> List[Dict]:
+        """
+        Incrementally fetches completed international fixtures by date.
+
+        Cached fixture IDs are skipped, making reruns idempotent for local
+        development and mirroring the Databricks bronze checkpoint behavior.
+        """
+        backfilled = []
+        cache_dirty = False
+        for chunk in self.iter_date_chunks(start_date, end_date, chunk_days):
+            for match_day in self.iter_date_chunks(
+                chunk["date_from"],
+                chunk["date_to"],
+                1,
+            ):
+                fixtures = self.fetch_international_fixtures_by_date(
+                    match_day["date_from"],
+                    completed_only=True,
+                )
+                for fixture in fixtures:
+                    fixture_id = (fixture.get("fixture") or {}).get("id")
+                    if not fixture_id:
+                        continue
+                    fid_str = str(fixture_id)
+                    if fid_str in self.cache and "player_statistics" in self.cache[fid_str]:
+                        continue
+                    player_stats = self.get_player_statistics(int(fixture_id))
+                    self.cache[fid_str] = {
+                        "match_info": {
+                            "date": (fixture.get("fixture") or {}).get("date"),
+                            "home_team": ((fixture.get("teams") or {}).get("home") or {}).get("name"),
+                            "away_team": ((fixture.get("teams") or {}).get("away") or {}).get("name"),
+                            "score": fixture.get("goals") or {},
+                            "league": fixture.get("league") or {},
+                        },
+                        "fixture": fixture.get("fixture"),
+                        "league": fixture.get("league"),
+                        "teams": fixture.get("teams"),
+                        "goals": fixture.get("goals"),
+                        "score": fixture.get("score"),
+                        "player_statistics": player_stats,
+                    }
+                    backfilled.append(self.cache[fid_str])
+                    cache_dirty = True
+                    if sleep_seconds:
+                        time.sleep(sleep_seconds)
+        if cache_dirty:
+            self._save_cache()
+        return backfilled
 
     def find_team_id(self, team_name: str) -> Optional[int]:
         """Looks up a team ID by name from cache or API search."""
