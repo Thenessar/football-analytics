@@ -22,12 +22,27 @@ class FixtureResolutionError(RuntimeError):
     """Raised when teams and a UTC date cannot resolve to one fixture."""
 
 
+class FootballApiQuotaError(RuntimeError):
+    """Raised when API-Football returns a quota or rate-limit response."""
+
+
 TEAM_NAME_ALIASES = {
     "cote d ivoire": "ivory coast",
     "cote divoire": "ivory coast",
     "cote d lvoire": "ivory coast",
     "ivory coast": "ivory coast",
 }
+
+QUOTA_ERROR_TOKENS = (
+    "rate limit",
+    "too many request",
+    "too many requests",
+    "quota",
+    "requests limit",
+    "request limit",
+    "subscription",
+    "exceeded",
+)
 
 
 def _normalize_text(value: str) -> str:
@@ -37,6 +52,19 @@ def _normalize_text(value: str) -> str:
     text = "".join(char if char.isalnum() else " " for char in text)
     normalized = " ".join(text.casefold().split())
     return TEAM_NAME_ALIASES.get(normalized, normalized)
+
+
+def _is_quota_error_payload(data: Dict) -> bool:
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if not errors:
+        return False
+    text = json.dumps(errors, ensure_ascii=False).casefold()
+    return any(token in text for token in QUOTA_ERROR_TOKENS)
+
+
+def _raise_for_quota_response(response) -> None:
+    if getattr(response, "status_code", None) == 429:
+        raise FootballApiQuotaError("API-Football HTTP 429: too many requests")
 
 
 class FootballDataPipeline:
@@ -70,6 +98,29 @@ class FootballDataPipeline:
                 json.dump(self.cache, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"Error saving cache: {e}")
+
+    def _checkpoint_file(self) -> str:
+        base, ext = os.path.splitext(self.cache_file)
+        return f"{base}.backfill_checkpoint{ext or '.json'}"
+
+    def _load_backfill_checkpoint(self) -> Dict[str, Dict]:
+        path = self._checkpoint_file()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading backfill checkpoint: {e}. Rebuilding as needed.")
+        return {}
+
+    def _save_backfill_checkpoint(self, checkpoint: Dict[str, Dict]) -> None:
+        if self.offline:
+            return
+        try:
+            with open(self._checkpoint_file(), "w", encoding="utf-8") as f:
+                json.dump(checkpoint, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving backfill checkpoint: {e}")
 
     @staticmethod
     def iter_date_chunks(
@@ -131,9 +182,12 @@ class FootballDataPipeline:
         url = f"{self.base_url}/fixtures"
         params = {"date": match_date, "timezone": "UTC"}
         response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        _raise_for_quota_response(response)
         response.raise_for_status()
         data = response.json()
         if data.get("errors"):
+            if _is_quota_error_payload(data):
+                raise FootballApiQuotaError(f"API quota/rate-limit error: {data['errors']}")
             raise Exception(f"API Error: {data['errors']}")
 
         fixtures = data.get("response", [])
@@ -160,17 +214,38 @@ class FootballDataPipeline:
         development and mirroring the Databricks bronze checkpoint behavior.
         """
         backfilled = []
-        cache_dirty = False
+        checkpoint = self._load_backfill_checkpoint()
         for chunk in self.iter_date_chunks(start_date, end_date, chunk_days):
+            window_key = f"{chunk['date_from']}:{chunk['date_to']}"
+            if checkpoint.get(window_key, {}).get("status") == "COMPLETED":
+                print(f"Skipping completed backfill window {window_key}")
+                continue
+            records_before_window = len(backfilled)
             for match_day in self.iter_date_chunks(
                 chunk["date_from"],
                 chunk["date_to"],
                 1,
             ):
-                fixtures = self.fetch_international_fixtures_by_date(
-                    match_day["date_from"],
-                    completed_only=True,
-                )
+                try:
+                    fixtures = self.fetch_international_fixtures_by_date(
+                        match_day["date_from"],
+                        completed_only=True,
+                    )
+                except FootballApiQuotaError as error:
+                    self._save_cache()
+                    checkpoint[window_key] = {
+                        "window_start_date": chunk["date_from"],
+                        "window_end_date": chunk["date_to"],
+                        "status": "PENDING",
+                        "updated_timestamp": datetime.datetime.utcnow().isoformat(),
+                        "records_ingested": len(backfilled) - records_before_window,
+                    }
+                    self._save_backfill_checkpoint(checkpoint)
+                    print(
+                        "Backfill paused due to API quota/rate limit. "
+                        f"Resume will restart window {window_key}. Diagnostic: {error}"
+                    )
+                    return backfilled
                 for fixture in fixtures:
                     fixture_id = (fixture.get("fixture") or {}).get("id")
                     if not fixture_id:
@@ -178,7 +253,23 @@ class FootballDataPipeline:
                     fid_str = str(fixture_id)
                     if fid_str in self.cache and "player_statistics" in self.cache[fid_str]:
                         continue
-                    player_stats = self.get_player_statistics(int(fixture_id))
+                    try:
+                        player_stats = self.get_player_statistics(int(fixture_id))
+                    except FootballApiQuotaError as error:
+                        self._save_cache()
+                        checkpoint[window_key] = {
+                            "window_start_date": chunk["date_from"],
+                            "window_end_date": chunk["date_to"],
+                            "status": "PENDING",
+                            "updated_timestamp": datetime.datetime.utcnow().isoformat(),
+                            "records_ingested": len(backfilled) - records_before_window,
+                        }
+                        self._save_backfill_checkpoint(checkpoint)
+                        print(
+                            "Backfill paused due to API quota/rate limit. "
+                            f"Resume will restart window {window_key}. Diagnostic: {error}"
+                        )
+                        return backfilled
                     self.cache[fid_str] = {
                         "match_info": {
                             "date": (fixture.get("fixture") or {}).get("date"),
@@ -195,11 +286,17 @@ class FootballDataPipeline:
                         "player_statistics": player_stats,
                     }
                     backfilled.append(self.cache[fid_str])
-                    cache_dirty = True
                     if sleep_seconds:
                         time.sleep(sleep_seconds)
-        if cache_dirty:
             self._save_cache()
+            checkpoint[window_key] = {
+                "window_start_date": chunk["date_from"],
+                "window_end_date": chunk["date_to"],
+                "status": "COMPLETED",
+                "updated_timestamp": datetime.datetime.utcnow().isoformat(),
+                "records_ingested": len(backfilled) - records_before_window,
+            }
+            self._save_backfill_checkpoint(checkpoint)
         return backfilled
 
     def find_team_id(self, team_name: str) -> Optional[int]:
@@ -396,10 +493,13 @@ class FootballDataPipeline:
         params = {"team": team_id, "season": 2026, "league": 1}
         print(f"Fetching fixtures for team {team_id}...")
         response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        _raise_for_quota_response(response)
         response.raise_for_status()
         data = response.json()
         
         if data.get("errors"):
+            if _is_quota_error_payload(data):
+                raise FootballApiQuotaError(f"API quota/rate-limit error: {data['errors']}")
             raise Exception(f"API Error: {data['errors']}")
             
         fixtures = data.get("response", [])
@@ -421,10 +521,15 @@ class FootballDataPipeline:
         params = {"fixture": fixture_id}
         print(f"Fetching player statistics for fixture {fixture_id} from API...")
         response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        _raise_for_quota_response(response)
         response.raise_for_status()
         data = response.json()
         
         if data.get("errors"):
+            if _is_quota_error_payload(data):
+                raise FootballApiQuotaError(
+                    f"API quota/rate-limit error for fixture {fixture_id}: {data['errors']}"
+                )
             print(f"API Error for fixture {fixture_id}: {data['errors']}")
             return []
             
