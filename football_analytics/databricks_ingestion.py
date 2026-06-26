@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 from typing import Iterable, Mapping, Optional
 
 import requests
@@ -9,6 +10,19 @@ from football_analytics.modeling import build_empirical_bayes_shot_rate_pandas_u
 BRONZE_FOOTBALL_MATCH_RAW_PATH = "/mnt/syndicate/bronze/football_match_raw"
 SILVER_PLAYER_MATCH_STATS_PATH = "/mnt/syndicate/silver/football_player_match_stats"
 GOLD_PLAYER_SAPM_PATH = "/mnt/syndicate/gold/football_player_sapm"
+INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_state_checkpoint"
+CHECKPOINT_PENDING = "PENDING"
+CHECKPOINT_COMPLETED = "COMPLETED"
+QUOTA_ERROR_TOKENS = (
+    "rate limit",
+    "too many request",
+    "too many requests",
+    "quota",
+    "requests limit",
+    "request limit",
+    "subscription",
+    "exceeded",
+)
 
 ACCENTED_CHARS = (
     "ÀÁÂÃÄÅĀĂĄÇĆČÐĎÈÉÊËĒĔĖĘĚÌÍÎÏĪĮİŁÑŃŇÒÓÔÕÖØŌŐŘŚŞŠÙÚÛÜŪŮŰÝŸŽŹŻ"
@@ -18,6 +32,10 @@ ASCII_CHARS = (
     "AAAAAAAAACCCDDEEEEEEEEEIIIIIIILNNNOOOOOOOORSSSUUUUUUUYYYZZZ"
     "aaaaaaaaacccddeeeeeeeeeiiiiiilnnnoooooooorsssuuuuuuuyyzzz"
 )
+
+
+class FootballApiQuotaError(RuntimeError):
+    """Raised when API-Football indicates a rate-limit or quota exhaustion event."""
 
 
 def _require_pyspark():
@@ -36,6 +54,39 @@ def _require_pyspark():
             "inside Databricks or install pyspark in the active environment."
         ) from error
     return F, ArrayType, IntegerType, StringType, StructField, StructType
+
+
+def iter_weekly_windows(
+    start_date: str = "2022-11-07",
+    end_date: Optional[str] = None,
+) -> list[tuple[str, str]]:
+    """Builds deterministic inclusive 7-day ingestion windows."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date) if end_date else date.today()
+    if end < start:
+        raise ValueError("end_date must be on or after start_date")
+
+    windows = []
+    cursor = start
+    while cursor <= end:
+        window_end = min(cursor + timedelta(days=6), end)
+        windows.append((cursor.isoformat(), window_end.isoformat()))
+        cursor = window_end + timedelta(days=1)
+    return windows
+
+
+def is_quota_error_payload(payload: Mapping) -> bool:
+    """Detects provider quota/rate-limit messages in API-Football envelopes."""
+    errors = payload.get("errors")
+    if not errors:
+        return False
+    text = json.dumps(errors, ensure_ascii=False).casefold()
+    return any(token in text for token in QUOTA_ERROR_TOKENS)
+
+
+def _raise_if_quota_response(response) -> None:
+    if getattr(response, "status_code", None) == 429:
+        raise FootballApiQuotaError("API-Football HTTP 429: too many requests")
 
 
 def normalized_name_sql(column_name: str):
@@ -128,11 +179,102 @@ def fetch_football_api_payload(
         params=dict(params),
         timeout=30,
     )
+    _raise_if_quota_response(response)
     response.raise_for_status()
     payload = response.json()
     if payload.get("errors"):
+        if is_quota_error_payload(payload):
+            raise FootballApiQuotaError(
+                f"API-Football quota/rate-limit error for {endpoint}: {payload['errors']}"
+            )
         raise RuntimeError(f"Football-API returned errors for {endpoint}: {payload['errors']}")
     return payload
+
+
+def ensure_ingestion_checkpoint_table(
+    spark,
+    *,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+) -> None:
+    """Creates the lightweight Delta checkpoint table if it is missing."""
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {checkpoint_table} (
+            window_start_date DATE,
+            window_end_date DATE,
+            status STRING,
+            updated_timestamp TIMESTAMP,
+            records_ingested INT
+        )
+        USING DELTA
+    """)
+
+
+def seed_ingestion_checkpoint_windows(
+    spark,
+    windows: Iterable[tuple[str, str]],
+    *,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+) -> None:
+    """Adds PENDING checkpoint rows for windows not already tracked."""
+    ensure_ingestion_checkpoint_table(spark, checkpoint_table=checkpoint_table)
+    rows = [(start, end, CHECKPOINT_PENDING, 0) for start, end in windows]
+    if not rows:
+        return
+
+    F, *_ = _require_pyspark()
+    staged = (
+        spark.createDataFrame(
+            rows,
+            "window_start_date string, window_end_date string, status string, records_ingested int",
+        )
+        .withColumn("window_start_date", F.to_date("window_start_date"))
+        .withColumn("window_end_date", F.to_date("window_end_date"))
+        .withColumn("updated_timestamp", F.current_timestamp())
+    )
+    staged.createOrReplaceTempView("_pending_ingestion_windows")
+    spark.sql(f"""
+        MERGE INTO {checkpoint_table} AS target
+        USING _pending_ingestion_windows AS source
+        ON target.window_start_date = source.window_start_date
+           AND target.window_end_date = source.window_end_date
+        WHEN NOT MATCHED THEN INSERT *
+    """)
+
+
+def update_ingestion_checkpoint(
+    spark,
+    window_start_date: str,
+    window_end_date: str,
+    *,
+    status: str,
+    records_ingested: int,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+) -> None:
+    """Atomically upserts one checkpoint row after its data commit succeeds."""
+    ensure_ingestion_checkpoint_table(spark, checkpoint_table=checkpoint_table)
+    row = [(window_start_date, window_end_date, status, int(records_ingested))]
+    F, *_ = _require_pyspark()
+    staged = (
+        spark.createDataFrame(
+            row,
+            "window_start_date string, window_end_date string, status string, records_ingested int",
+        )
+        .withColumn("window_start_date", F.to_date("window_start_date"))
+        .withColumn("window_end_date", F.to_date("window_end_date"))
+        .withColumn("updated_timestamp", F.current_timestamp())
+    )
+    staged.createOrReplaceTempView("_ingestion_checkpoint_update")
+    spark.sql(f"""
+        MERGE INTO {checkpoint_table} AS target
+        USING _ingestion_checkpoint_update AS source
+        ON target.window_start_date = source.window_start_date
+           AND target.window_end_date = source.window_end_date
+        WHEN MATCHED THEN UPDATE SET
+            status = source.status,
+            updated_timestamp = source.updated_timestamp,
+            records_ingested = source.records_ingested
+        WHEN NOT MATCHED THEN INSERT *
+    """)
 
 
 def ingest_fixture_player_stats_to_delta(

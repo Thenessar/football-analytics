@@ -1,10 +1,12 @@
 import os
+import json
 import pandas as pd
 import pytest
 from football_analytics.pipeline import (
     FootballDataPipeline,
     ConfirmedLineupDataError,
     FixtureResolutionError,
+    FootballApiQuotaError,
 )
 
 @pytest.fixture
@@ -30,6 +32,97 @@ def test_backfill_date_chunks_start_at_2022_anchor():
         {"date_from": "2022-11-07", "date_to": "2022-11-13"},
         {"date_from": "2022-11-14", "date_to": "2022-11-20"},
     ]
+
+
+def test_backfill_marks_week_completed_after_cache_flush(monkeypatch, tmp_path):
+    cache_file = tmp_path / "cache.json"
+    pipeline = FootballDataPipeline(offline=False, cache_file=str(cache_file))
+    events = []
+
+    def fake_fetch(match_date, completed_only=True):
+        events.append(("fetch", match_date))
+        if match_date == "2022-11-07":
+            return [{
+                "fixture": {"id": 1, "date": "2022-11-07T12:00:00+00:00"},
+                "teams": {"home": {"name": "A"}, "away": {"name": "B"}},
+                "goals": {"home": 1, "away": 0},
+                "score": {"fulltime": {"home": 1, "away": 0}},
+                "league": {"name": "World Cup"},
+            }]
+        return []
+
+    def fake_save_cache():
+        events.append(("save_cache", sorted(pipeline.cache.keys())))
+        FootballDataPipeline._save_cache(pipeline)
+
+    monkeypatch.setattr(pipeline, "fetch_international_fixtures_by_date", fake_fetch)
+    monkeypatch.setattr(pipeline, "get_player_statistics", lambda fixture_id: [{"team": {"id": 10, "name": "A"}, "players": []}])
+    monkeypatch.setattr(pipeline, "_save_cache", fake_save_cache)
+
+    records = pipeline.backfill_international_fixtures(
+        start_date="2022-11-07",
+        end_date="2022-11-13",
+        sleep_seconds=0,
+    )
+
+    checkpoint = json.loads((tmp_path / "cache.backfill_checkpoint.json").read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert checkpoint["2022-11-07:2022-11-13"]["status"] == "COMPLETED"
+    assert checkpoint["2022-11-07:2022-11-13"]["records_ingested"] == 1
+    assert events[-1] == ("save_cache", ["1"])
+
+
+def test_backfill_skips_completed_checkpoint(monkeypatch, tmp_path):
+    cache_file = tmp_path / "cache.json"
+    checkpoint_file = tmp_path / "cache.backfill_checkpoint.json"
+    checkpoint_file.write_text(
+        json.dumps({"2022-11-07:2022-11-13": {"status": "COMPLETED"}}),
+        encoding="utf-8",
+    )
+    pipeline = FootballDataPipeline(offline=False, cache_file=str(cache_file))
+
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("completed windows should not make redundant API calls")
+
+    monkeypatch.setattr(pipeline, "fetch_international_fixtures_by_date", fail_fetch)
+
+    records = pipeline.backfill_international_fixtures(
+        start_date="2022-11-07",
+        end_date="2022-11-13",
+        sleep_seconds=0,
+    )
+
+    assert records == []
+
+
+def test_backfill_quota_exit_leaves_window_pending(monkeypatch, tmp_path):
+    cache_file = tmp_path / "cache.json"
+    pipeline = FootballDataPipeline(offline=False, cache_file=str(cache_file))
+
+    def fake_fetch(match_date, completed_only=True):
+        if match_date == "2022-11-07":
+            return [{
+                "fixture": {"id": 1, "date": "2022-11-07T12:00:00+00:00"},
+                "teams": {"home": {"name": "A"}, "away": {"name": "B"}},
+                "goals": {"home": 1, "away": 0},
+                "score": {"fulltime": {"home": 1, "away": 0}},
+                "league": {"name": "World Cup"},
+            }]
+        raise FootballApiQuotaError("daily quota exceeded")
+
+    monkeypatch.setattr(pipeline, "fetch_international_fixtures_by_date", fake_fetch)
+    monkeypatch.setattr(pipeline, "get_player_statistics", lambda fixture_id: [{"team": {"id": 10, "name": "A"}, "players": []}])
+
+    records = pipeline.backfill_international_fixtures(
+        start_date="2022-11-07",
+        end_date="2022-11-13",
+        sleep_seconds=0,
+    )
+
+    checkpoint = json.loads((tmp_path / "cache.backfill_checkpoint.json").read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert checkpoint["2022-11-07:2022-11-13"]["status"] == "PENDING"
+    assert checkpoint["2022-11-07:2022-11-13"]["records_ingested"] == 1
 
 def test_load_historical_team_stats(offline_pipeline):
     """Verifies that stats are loaded, minimized, and nulls are cleaned to 0."""
