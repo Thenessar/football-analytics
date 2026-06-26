@@ -25,19 +25,17 @@ def format_defensive_prose(
 
     if percentage_change > 0:
         return (
-            f"Evolving tactical space allows {team_name} attackers more freedom, "
-            f"which increases their baseline shot creation by ~{absolute_percentage}% "
-            f"against {opponent_name}'s defensive shape."
+            f"{opponent_name}'s defensive shape increases {team_name}'s "
+            f"shooting opportunities by ~{absolute_percentage}%."
         )
     if percentage_change < 0:
         return (
-            f"{opponent_name}'s compact defensive alignment compresses space "
-            f"effectively, which decreases {team_name}'s baseline shot creation "
-            f"by ~{absolute_percentage}%."
+            f"{opponent_name}'s defensive shape decreases {team_name}'s "
+            f"shooting opportunities by ~{absolute_percentage}%."
         )
     return (
         "Tactical defensive shapes mirror field expectations perfectly, "
-        "resulting in a neutral 0% net impact on baseline shot creation."
+        "resulting in a neutral 0% net impact on shooting opportunities."
     )
 
 
@@ -129,6 +127,22 @@ HTML_REPORT_TEMPLATE = """
             width: 42%;
         }
 
+        .toolbar {
+            text-align: right;
+            margin: 0 0 8px 0;
+        }
+
+        .print-button {
+            background: #1e293b;
+            border: 1px solid #1e293b;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 8pt;
+            font-weight: bold;
+            padding: 5px 9px;
+            text-transform: uppercase;
+        }
+
         .section-heading {
             font-size: 10.5pt;
             color: #1e293b;
@@ -202,7 +216,7 @@ HTML_REPORT_TEMPLATE = """
             text-transform: uppercase;
             border: 1px solid #1e293b;
             vertical-align: middle;
-            white-space: normal;
+            white-space: nowrap;
             word-break: normal;
         }
 
@@ -212,7 +226,7 @@ HTML_REPORT_TEMPLATE = """
             line-height: 1.08;
             border: 1px solid #dbe4ef;
             vertical-align: middle;
-            white-space: normal;
+            white-space: nowrap;
             word-break: normal;
             overflow-wrap: normal;
             hyphens: none;
@@ -256,6 +270,12 @@ HTML_REPORT_TEMPLATE = """
             color: #94a3b8;
             font-size: 7pt;
             font-weight: bold;
+        }
+
+        @media print {
+            .toolbar {
+                display: none;
+            }
         }
     </style>
 </head>
@@ -322,6 +342,10 @@ HTML_REPORT_TEMPLATE = """
         </tr>
     </table>
 
+    <div class="toolbar">
+        <button class="print-button" type="button" onclick="window.print()">Print PDF</button>
+    </div>
+
     <h2 class="section-heading">Complete Starting XI Simulation Matrix</h2>
     <table class="simulation-table">
         <colgroup>
@@ -337,7 +361,7 @@ HTML_REPORT_TEMPLATE = """
         <thead>
             <tr>
                 <th>Team</th>
-                <th>Starting Player</th>
+                <th>Player Name</th>
                 <th class="text-center">Position</th>
                 <th class="text-center">Projected Shots (Mean)</th>
                 <th class="text-center">Projected Shots on Target (Mean)</th>
@@ -350,7 +374,7 @@ HTML_REPORT_TEMPLATE = """
             {% for row in projection_rows %}
             <tr>
                 <td>{{ row.Team }}</td>
-                <td class="bold">{{ row.Starting_Player }}</td>
+                <td class="bold">{{ row.Player_Name }}</td>
                 <td class="text-center">{{ row.Position }}</td>
                 <td class="text-center">{{ "%.2f"|format(row.Projected_Shots) }}</td>
                 <td class="text-center">{{ "%.2f"|format(row.Projected_SOT) }}</td>
@@ -381,7 +405,7 @@ def generate_html_report(
     """Renders the simulation-only stakeholder report."""
     required_columns = [
         "Team",
-        "Starting Player",
+        "Player Name",
         "Position",
         "Projected Shots (Mean)",
         "Projected Shots on Target (Mean)",
@@ -394,8 +418,7 @@ def generate_html_report(
         raise ValueError(f"Projection data is missing required columns: {missing}")
 
     visible = projections_df[
-        (projections_df["Position"] != "G")
-        & (projections_df["Simulated Any Shot Probability (%)"] > 0)
+        projections_df["Position"] != "G"
     ].copy()
     visible = visible.sort_values(
         by="Projected Shots (Mean)",
@@ -407,7 +430,7 @@ def generate_html_report(
     for _, row in visible.iterrows():
         projection_rows.append({
             "Team": _pdf_safe_text(row["Team"]),
-            "Starting_Player": _pdf_safe_text(row["Starting Player"]),
+            "Player_Name": _pdf_safe_text(row["Player Name"]),
             "Position": row["Position"],
             "Projected_Shots": float(row["Projected Shots (Mean)"]),
             "Projected_SOT": float(row["Projected Shots on Target (Mean)"]),

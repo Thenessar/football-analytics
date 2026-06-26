@@ -189,11 +189,11 @@ def run_matchup_pipeline(
     parquet_filename = f"{matchup_slug}_shooting_projections.parquet"
     parquet_records = []
     for item in combined_sim_results:
-        if item["position"] == "G" or item["any_shot_probability"] <= 0:
+        if item["position"] == "G":
             continue
         parquet_records.append({
             "Team": item["team"],
-            "Starting Player": item["player_name"],
+            "Player Name": item["player_name"],
             "Position": item["position"],
             "Projected Shots (Mean)": round(item["mean_shots"], 4),
             "Projected Shots on Target (Mean)": round(item["mean_sot"], 4),
@@ -215,7 +215,7 @@ def run_matchup_pipeline(
         projections_df[
             [
                 "Team",
-                "Starting Player",
+                "Player Name",
                 "Position",
                 "Projected Shots (Mean)",
                 "Projected Shots on Target (Mean)",
