@@ -5,8 +5,7 @@ bundle:
 
 variables:
   cluster_id: "0123-456789-yourcluster"
-  fixture_id: "1489437"
+  fixture_id: ""
   catalog: "main"
   schema: "football_dev"
   schedule_pause_status: "PAUSED"
-

@@ -14,8 +14,8 @@ variables:
     description: Unity Catalog schema for managed football analytics tables.
     default: football
   fixture_id:
-    description: API-Sports fixture ID to ingest when manually running the bundle.
-    default: "1489437"
+    description: Optional API-Sports fixture ID for one-fixture manual runs.
+    default: ""
   run_id:
     description: Optional externally supplied run ID.
     default: manual
@@ -41,4 +41,3 @@ targets:
       catalog: main
       schema: football
       schedule_pause_status: PAUSED
-
