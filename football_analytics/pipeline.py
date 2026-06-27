@@ -6,6 +6,9 @@ import unicodedata
 import requests
 import pandas as pd
 from typing import Dict, List, Optional
+from football_analytics.api import FootballApiClient
+from football_analytics.api.exceptions import FootballApiPayloadError
+from football_analytics.api.exceptions import FootballApiQuotaError as SharedFootballApiQuotaError
 from football_analytics.config import (
     BASE_URL,
     CACHE_FILE,
@@ -22,7 +25,7 @@ class FixtureResolutionError(RuntimeError):
     """Raised when teams and a UTC date cannot resolve to one fixture."""
 
 
-class FootballApiQuotaError(RuntimeError):
+class FootballApiQuotaError(SharedFootballApiQuotaError):
     """Raised when API-Football returns a quota or rate-limit response."""
 
 
@@ -78,6 +81,20 @@ class FootballDataPipeline:
         self.cache_file = cache_file
         self.offline = offline
         self.cache = self._load_cache()
+        self.api_client = FootballApiClient(
+            api_key=api_key,
+            base_url=self.base_url,
+            headers=self.headers,
+            request_get=requests.get,
+        )
+
+    def _api_get(self, endpoint: str, params: Dict) -> Dict:
+        try:
+            return self.api_client.get(endpoint, params)
+        except SharedFootballApiQuotaError as error:
+            raise FootballApiQuotaError(str(error)) from error
+        except FootballApiPayloadError as error:
+            raise Exception(str(error)) from error
 
     def _load_cache(self) -> Dict:
         """Loads historical fixtures and player statistics cache."""
@@ -179,16 +196,8 @@ class FootballDataPipeline:
                 })
             return fixtures
 
-        url = f"{self.base_url}/fixtures"
         params = {"date": match_date, "timezone": "UTC"}
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
-        _raise_for_quota_response(response)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("errors"):
-            if _is_quota_error_payload(data):
-                raise FootballApiQuotaError(f"API quota/rate-limit error: {data['errors']}")
-            raise Exception(f"API Error: {data['errors']}")
+        data = self._api_get("fixtures", params)
 
         fixtures = data.get("response", [])
         if not completed_only:
@@ -322,7 +331,6 @@ class FootballDataPipeline:
             return 999
 
         # 3. Query API search
-        url = f"{self.base_url}/teams"
         search_name = (
             "Ivory Coast"
             if normalized_team_name == "ivory coast"
@@ -330,9 +338,7 @@ class FootballDataPipeline:
         )
         params = {"search": search_name}
         try:
-            response = requests.get(url, headers=self.headers, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
+            data = self._api_get("teams", params)
             for item in data.get("response", []):
                 team_info = item.get("team", {})
                 if _normalize_text(team_info.get("name")) == normalized_team_name:
@@ -380,20 +386,12 @@ class FootballDataPipeline:
                     },
                 })
         else:
-            url = f"{self.base_url}/fixtures"
             params = {
                 "date": parsed_date.isoformat(),
                 "timezone": "UTC",
             }
             try:
-                response = requests.get(
-                    url,
-                    headers=self.headers,
-                    params=params,
-                    timeout=30,
-                )
-                response.raise_for_status()
-                data = response.json()
+                data = self._api_get("fixtures", params)
             except Exception as error:
                 raise FixtureResolutionError(
                     f"Fixture lookup failed for {parsed_date.isoformat()} UTC: {error}"
@@ -489,18 +487,9 @@ class FootballDataPipeline:
             return completed[:limit]
 
         # Live Mode
-        url = f"{self.base_url}/fixtures"
         params = {"team": team_id, "season": 2026, "league": 1}
         print(f"Fetching fixtures for team {team_id}...")
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
-        _raise_for_quota_response(response)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("errors"):
-            if _is_quota_error_payload(data):
-                raise FootballApiQuotaError(f"API quota/rate-limit error: {data['errors']}")
-            raise Exception(f"API Error: {data['errors']}")
+        data = self._api_get("fixtures", params)
             
         fixtures = data.get("response", [])
         completed = [f for f in fixtures if f["fixture"]["status"]["short"] == "FT"]
@@ -517,21 +506,9 @@ class FootballDataPipeline:
             return []
 
         # Live Mode
-        url = f"{self.base_url}/fixtures/players"
         params = {"fixture": fixture_id}
         print(f"Fetching player statistics for fixture {fixture_id} from API...")
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
-        _raise_for_quota_response(response)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("errors"):
-            if _is_quota_error_payload(data):
-                raise FootballApiQuotaError(
-                    f"API quota/rate-limit error for fixture {fixture_id}: {data['errors']}"
-                )
-            print(f"API Error for fixture {fixture_id}: {data['errors']}")
-            return []
+        data = self._api_get("fixtures/players", params)
             
         return data.get("response", [])
 
@@ -574,11 +551,8 @@ class FootballDataPipeline:
             return {}
 
         # Live Mode
-        url = f"{self.base_url}/fixtures"
         params = {"id": fixture_id}
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+        data = self._api_get("fixtures", params)
         res = data.get("response", [])
         return res[0] if res else {}
 
@@ -595,12 +569,9 @@ class FootballDataPipeline:
             cached_lineups = self.cache.get(fid_str, {}).get("lineups")
             return cached_lineups or None
 
-        url = f"{self.base_url}/fixtures/lineups"
         params = {"fixture": fixture_id}
         try:
-            response = requests.get(url, headers=self.headers, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
+            data = self._api_get("fixtures/lineups", params)
         except Exception as error:
             raise ConfirmedLineupDataError(
                 f"Fatal live lineup fetch failure for fixture {fixture_id}: {error}"
