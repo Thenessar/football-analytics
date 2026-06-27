@@ -12,6 +12,12 @@ resources:
       parameters:
         - name: fixture_id
           default: ${var.fixture_id}
+        - name: target_date
+          default: ""
+        - name: date_from
+          default: ""
+        - name: date_to
+          default: ""
         - name: run_id
           default: ${var.run_id}
         - name: catalog
@@ -30,6 +36,9 @@ resources:
             notebook_path: ../notebooks/05_orchestrate_worldcup_run.py
             base_parameters:
               fixture_id: "{{job.parameters.fixture_id}}"
+              target_date: "{{job.parameters.target_date}}"
+              date_from: "{{job.parameters.date_from}}"
+              date_to: "{{job.parameters.date_to}}"
               run_id: "{{job.run_id}}"
 
         - task_key: bronze_api_ingest
@@ -61,4 +70,3 @@ resources:
           existing_cluster_id: ${var.cluster_id}
           notebook_task:
             notebook_path: ../notebooks/04_pipeline_quality_checks.py
-

@@ -13,8 +13,11 @@ if API_KEY:
 
 # Local cache settings for testing & minimizing redundant API requests
 CACHE_FILE = "world_cup_2026_completed_data.json"
-HISTORICAL_ANCHOR_DATE = "2022-11-07"
+INTERNATIONAL_MATCH_ANCHOR_DATE = "2022-12-23"
+HISTORICAL_ANCHOR_DATE = INTERNATIONAL_MATCH_ANCHOR_DATE
 RECENCY_HALF_LIFE_DAYS = 365
+FIFA_RANKINGS_SEED_FILE = "data/seeds/fifa_mens_world_ranking_december_2022.csv"
+FIFA_RANKINGS_SEED_AS_OF_DATE = "2022-12-22"
 
 # ==============================================================================
 # Quantitative Modeling & Prior Configs

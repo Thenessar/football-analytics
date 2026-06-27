@@ -16,6 +16,88 @@ def test_weekly_windows_are_deterministic_from_anchor():
     ]
 
 
+def test_weekly_windows_default_to_post_2022_world_cup_anchor():
+    assert ingestion.iter_weekly_windows(end_date="2023-01-05") == [
+        ("2022-12-23", "2022-12-29"),
+        ("2022-12-30", "2023-01-05"),
+    ]
+
+
+def test_fifa_rankings_seed_file_is_versioned_with_expected_source_columns():
+    seed_path = "data/seeds/fifa_mens_world_ranking_december_2022.csv"
+    with open(seed_path, "r", encoding="utf-8") as seed_file:
+        assert seed_file.readline().strip() == "Rank,Team,Raiting"
+        assert seed_file.readline().strip().startswith("1,Brazil,")
+
+
+def test_daily_dates_are_inclusive():
+    assert ingestion.iter_daily_dates("2026-06-25", "2026-06-27") == [
+        "2026-06-25",
+        "2026-06-26",
+        "2026-06-27",
+    ]
+
+
+def test_fetch_world_cup_fixtures_for_date_filters_non_world_cup(monkeypatch):
+    def fake_fetch(endpoint, params, *, api_key=None):
+        assert endpoint == "fixtures"
+        assert params == {"date": "2026-06-25", "timezone": "UTC"}
+        return {
+            "response": [
+                {
+                    "fixture": {"id": 1489437, "status": {"short": "FT"}},
+                    "league": {"id": 1, "season": 2026},
+                },
+                {
+                    "fixture": {"id": 1036663, "status": {"short": "FT"}},
+                    "league": {"id": 667, "season": 2023},
+                },
+            ]
+        }
+
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+
+    fixtures = ingestion.fetch_world_cup_fixtures_for_date("2026-06-25")
+
+    assert [(fixture["fixture"]["id"]) for fixture in fixtures] == [1489437]
+
+
+def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatch):
+    discovered_dates = []
+    ingested_fixture_ids = []
+
+    def fake_discover(match_date, *, api_key=None, completed_only=True):
+        discovered_dates.append(match_date)
+        return [{
+            "fixture": {"id": 1000 + len(discovered_dates), "status": {"short": "FT"}},
+            "league": {"id": 1, "season": 2026},
+        }]
+
+    def fake_ingest(spark, fixture_ids, *, api_key=None, bronze_path=ingestion.BRONZE_FOOTBALL_MATCH_RAW_PATH):
+        ingested_fixture_ids.extend(fixture_ids)
+        return ingestion.BronzeIngestionSummary(
+            requested_dates=(),
+            discovered_fixtures=len(fixture_ids),
+            ingested_fixtures=len(fixture_ids),
+            skipped_fixtures=0,
+            failed_fixtures=0,
+            fixture_ids=tuple(fixture_ids),
+        )
+
+    monkeypatch.setattr(ingestion, "fetch_world_cup_fixtures_for_date", fake_discover)
+    monkeypatch.setattr(ingestion, "ingest_player_stats_for_fixtures_to_bronze", fake_ingest)
+
+    summary = ingestion.ingest_world_cup_player_stats_bronze(
+        spark=object(),
+        date_from="2026-06-25",
+        date_to="2026-06-26",
+    )
+
+    assert discovered_dates == ["2026-06-25", "2026-06-26"]
+    assert ingested_fixture_ids == [1001, 1002]
+    assert summary.as_dict()["ingested_fixtures"] == 2
+
+
 def test_accent_translation_map_is_valid_for_pyspark_translate():
     assert len(ingestion.ACCENTED_CHARS) == len(ingestion.ASCII_CHARS)
     assert "Á" in ingestion.ACCENTED_CHARS

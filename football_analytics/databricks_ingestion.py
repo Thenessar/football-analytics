@@ -1,10 +1,12 @@
 import json
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Iterable, Mapping, Optional
 
 import requests
 
-from football_analytics.config import BASE_URL, HEADERS
+from football_analytics.config import BASE_URL, HEADERS, HISTORICAL_ANCHOR_DATE
+from football_analytics.config import FIFA_RANKINGS_SEED_AS_OF_DATE, FIFA_RANKINGS_SEED_FILE
 from football_analytics.api import FootballApiClient, is_quota_error_payload, payload_hash
 from football_analytics.api.exceptions import FootballApiPayloadError
 from football_analytics.api.exceptions import FootballApiQuotaError as SharedFootballApiQuotaError
@@ -17,8 +19,10 @@ SILVER_PLAYER_MATCH_STATS_PATH = "/mnt/syndicate/silver/football_player_match_st
 GOLD_PLAYER_SAPM_PATH = "/mnt/syndicate/gold/football_player_sapm"
 INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_state_checkpoint"
 DEAD_LETTER_TABLE = "default.football_ingestion_dead_letter"
+FIFA_RANKINGS_SEED_TABLE = "default.fifa_mens_world_ranking_seed"
 CHECKPOINT_PENDING = "PENDING"
 CHECKPOINT_COMPLETED = "COMPLETED"
+COMPLETED_FIXTURE_STATUSES = {"FT", "AET", "PEN"}
 QUOTA_ERROR_TOKENS = (
     "rate limit",
     "too many request",
@@ -63,7 +67,7 @@ def _require_pyspark():
 
 
 def iter_weekly_windows(
-    start_date: str = "2022-11-07",
+    start_date: str = HISTORICAL_ANCHOR_DATE,
     end_date: Optional[str] = None,
 ) -> list[tuple[str, str]]:
     """Builds deterministic inclusive 7-day ingestion windows."""
@@ -79,6 +83,40 @@ def iter_weekly_windows(
         windows.append((cursor.isoformat(), window_end.isoformat()))
         cursor = window_end + timedelta(days=1)
     return windows
+
+
+def iter_daily_dates(start_date: str, end_date: str) -> list[str]:
+    """Builds deterministic inclusive daily load dates."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("end_date must be on or after start_date")
+    days = []
+    cursor = start
+    while cursor <= end:
+        days.append(cursor.isoformat())
+        cursor = cursor + timedelta(days=1)
+    return days
+
+
+@dataclass(frozen=True)
+class BronzeIngestionSummary:
+    requested_dates: tuple[str, ...]
+    discovered_fixtures: int
+    ingested_fixtures: int
+    skipped_fixtures: int
+    failed_fixtures: int
+    fixture_ids: tuple[int, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "requested_dates": list(self.requested_dates),
+            "discovered_fixtures": self.discovered_fixtures,
+            "ingested_fixtures": self.ingested_fixtures,
+            "skipped_fixtures": self.skipped_fixtures,
+            "failed_fixtures": self.failed_fixtures,
+            "fixture_ids": list(self.fixture_ids),
+        }
 
 
 def is_quota_error_payload(payload: Mapping) -> bool:
@@ -260,6 +298,154 @@ def fetch_football_api_payload(
         raise FootballApiQuotaError(str(error)) from error
     except FootballApiPayloadError as error:
         raise RuntimeError(str(error).replace("API-Sports", "Football-API")) from error
+
+
+def write_fifa_rankings_seed_table(
+    spark,
+    *,
+    seed_file: str = FIFA_RANKINGS_SEED_FILE,
+    seed_as_of_date: str = FIFA_RANKINGS_SEED_AS_OF_DATE,
+    table_name: str = FIFA_RANKINGS_SEED_TABLE,
+):
+    """
+    Materializes the December 2022 FIFA ranking CSV as a typed Delta seed table.
+
+    The source CSV intentionally stays raw in git. This loader normalizes the
+    source typo `Raiting` to `rating` for downstream joins and modeling.
+    """
+    F, *_ = _require_pyspark()
+    seed_df = (
+        spark.read.option("header", True).csv(seed_file)
+        .select(
+            F.col("Rank").cast("int").alias("rank"),
+            F.col("Team").alias("team_name"),
+            F.col("Raiting").cast("double").alias("rating"),
+        )
+        .withColumn("ranking_as_of_date", F.to_date(F.lit(seed_as_of_date)))
+    )
+    seed_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
+    return seed_df
+
+
+def fetch_world_cup_fixtures_for_date(
+    match_date: str,
+    *,
+    api_key: Optional[str] = None,
+    completed_only: bool = True,
+) -> list[Mapping]:
+    """Discovers valid World Cup fixtures for one UTC date."""
+    payload = fetch_football_api_payload(
+        "fixtures",
+        {"date": match_date, "timezone": "UTC"},
+        api_key=api_key,
+    )
+    fixtures = []
+    for fixture in payload.get("response", []):
+        try:
+            validate_world_cup_fixture(
+                fixture,
+                require_completed=completed_only,
+            )
+        except ValidationError:
+            continue
+        if completed_only:
+            status = ((fixture.get("fixture") or {}).get("status") or {}).get("short")
+            if status not in COMPLETED_FIXTURE_STATUSES:
+                continue
+        fixtures.append(fixture)
+    return fixtures
+
+
+def ingest_player_stats_for_fixtures_to_bronze(
+    spark,
+    fixture_ids: Iterable[int],
+    *,
+    api_key: Optional[str] = None,
+    bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
+) -> BronzeIngestionSummary:
+    """Fetches `/fixtures/players` for explicit fixture IDs and lands Bronze rows."""
+    ingested = []
+    failed = 0
+    fixture_id_list = [int(fixture_id) for fixture_id in fixture_ids]
+    for fixture_id in fixture_id_list:
+        try:
+            payload = fetch_football_api_payload(
+                "fixtures/players",
+                {"fixture": fixture_id},
+                api_key=api_key,
+            )
+            write_player_stats_bronze(
+                spark,
+                [payload],
+                fixture_id=fixture_id,
+                bronze_path=bronze_path,
+            )
+            ingested.append(fixture_id)
+        except Exception:
+            failed += 1
+    return BronzeIngestionSummary(
+        requested_dates=(),
+        discovered_fixtures=len(fixture_id_list),
+        ingested_fixtures=len(ingested),
+        skipped_fixtures=0,
+        failed_fixtures=failed,
+        fixture_ids=tuple(ingested),
+    )
+
+
+def ingest_world_cup_player_stats_bronze(
+    spark,
+    *,
+    api_key: Optional[str] = None,
+    target_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    completed_only: bool = True,
+    bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
+) -> BronzeIngestionSummary:
+    """
+    Discovers World Cup fixtures by UTC date/range, then lands player stats in Bronze.
+
+    Daily scheduled runs pass `target_date`. Historical backfills pass
+    `date_from` and `date_to`. The downstream Silver transform deduplicates on
+    fixture/team/player keys, so reruns are safe for analytical outputs.
+    """
+    if target_date:
+        dates = [target_date]
+    elif date_from and date_to:
+        dates = iter_daily_dates(date_from, date_to)
+    else:
+        raise ValueError("Provide target_date or both date_from and date_to")
+
+    discovered = []
+    skipped = 0
+    for match_date in dates:
+        fixtures = fetch_world_cup_fixtures_for_date(
+            match_date,
+            api_key=api_key,
+            completed_only=completed_only,
+        )
+        for fixture in fixtures:
+            fixture_id = (fixture.get("fixture") or {}).get("id")
+            if fixture_id:
+                discovered.append(int(fixture_id))
+            else:
+                skipped += 1
+
+    fixture_summary = ingest_player_stats_for_fixtures_to_bronze(
+        spark,
+        discovered,
+        api_key=api_key,
+        bronze_path=bronze_path,
+    )
+    return BronzeIngestionSummary(
+        requested_dates=tuple(dates),
+        discovered_fixtures=len(discovered),
+        ingested_fixtures=fixture_summary.ingested_fixtures,
+        skipped_fixtures=skipped + fixture_summary.skipped_fixtures,
+        failed_fixtures=fixture_summary.failed_fixtures,
+        fixture_ids=fixture_summary.fixture_ids,
+    )
 
 
 def ensure_ingestion_checkpoint_table(
