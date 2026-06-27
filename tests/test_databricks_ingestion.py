@@ -62,6 +62,32 @@ def test_fetch_world_cup_fixtures_for_date_filters_non_world_cup(monkeypatch):
     assert [(fixture["fixture"]["id"]) for fixture in fixtures] == [1489437]
 
 
+def test_fetch_international_fixtures_for_date_keeps_senior_mens_national_competitions(monkeypatch):
+    def fake_fetch(endpoint, params, *, api_key=None):
+        return {
+            "response": [
+                {
+                    "fixture": {"id": 1, "status": {"short": "FT"}},
+                    "league": {"id": 10, "season": 2024, "name": "Friendlies"},
+                },
+                {
+                    "fixture": {"id": 2, "status": {"short": "FT"}},
+                    "league": {"id": 960, "season": 2024, "name": "Euro Championship - Qualification"},
+                },
+                {
+                    "fixture": {"id": 3, "status": {"short": "FT"}},
+                    "league": {"id": 667, "season": 2024, "name": "Friendlies Clubs"},
+                },
+            ]
+        }
+
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+
+    fixtures = ingestion.fetch_international_fixtures_for_date("2024-06-01")
+
+    assert [fixture["fixture"]["id"] for fixture in fixtures] == [1, 2]
+
+
 def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatch):
     discovered_dates = []
     ingested_fixture_ids = []
@@ -84,7 +110,7 @@ def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatc
             fixture_ids=tuple(fixture_ids),
         )
 
-    monkeypatch.setattr(ingestion, "fetch_world_cup_fixtures_for_date", fake_discover)
+    monkeypatch.setattr(ingestion, "fetch_international_fixtures_for_date", fake_discover)
     monkeypatch.setattr(ingestion, "ingest_player_stats_for_fixtures_to_bronze", fake_ingest)
 
     summary = ingestion.ingest_world_cup_player_stats_bronze(
