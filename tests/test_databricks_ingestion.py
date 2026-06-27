@@ -38,7 +38,7 @@ def test_daily_dates_are_inclusive():
     ]
 
 
-def test_fetch_world_cup_fixtures_for_date_filters_non_world_cup(monkeypatch):
+def test_legacy_world_cup_fixture_wrapper_filters_non_world_cup(monkeypatch):
     def fake_fetch(endpoint, params, *, api_key=None):
         assert endpoint == "fixtures"
         assert params == {"date": "2026-06-25", "timezone": "UTC"}
@@ -62,7 +62,7 @@ def test_fetch_world_cup_fixtures_for_date_filters_non_world_cup(monkeypatch):
     assert [(fixture["fixture"]["id"]) for fixture in fixtures] == [1489437]
 
 
-def test_fetch_international_fixtures_for_date_keeps_senior_mens_national_competitions(monkeypatch):
+def test_fetch_senior_mens_international_fixtures_for_date_keeps_national_competitions(monkeypatch):
     def fake_fetch(endpoint, params, *, api_key=None):
         return {
             "response": [
@@ -83,12 +83,12 @@ def test_fetch_international_fixtures_for_date_keeps_senior_mens_national_compet
 
     monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
 
-    fixtures = ingestion.fetch_international_fixtures_for_date("2024-06-01")
+    fixtures = ingestion.fetch_senior_mens_international_fixtures_for_date("2024-06-01")
 
     assert [fixture["fixture"]["id"] for fixture in fixtures] == [1, 2]
 
 
-def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatch):
+def test_senior_mens_international_player_stats_bronze_discovers_fixture_range(monkeypatch):
     discovered_dates = []
     ingested_fixture_ids = []
 
@@ -110,10 +110,10 @@ def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatc
             fixture_ids=tuple(fixture_ids),
         )
 
-    monkeypatch.setattr(ingestion, "fetch_international_fixtures_for_date", fake_discover)
+    monkeypatch.setattr(ingestion, "fetch_senior_mens_international_fixtures_for_date", fake_discover)
     monkeypatch.setattr(ingestion, "ingest_player_stats_for_fixtures_to_bronze", fake_ingest)
 
-    summary = ingestion.ingest_world_cup_player_stats_bronze(
+    summary = ingestion.ingest_senior_mens_international_player_stats_bronze(
         spark=object(),
         date_from="2026-06-25",
         date_to="2026-06-26",
@@ -122,6 +122,34 @@ def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatc
     assert discovered_dates == ["2026-06-25", "2026-06-26"]
     assert ingested_fixture_ids == [1001, 1002]
     assert summary.as_dict()["ingested_fixtures"] == 2
+
+
+def test_legacy_world_cup_player_stats_wrapper_delegates_to_senior_international_loader(monkeypatch):
+    captured = {}
+
+    def fake_loader(spark, **kwargs):
+        captured["spark"] = spark
+        captured["kwargs"] = kwargs
+        return ingestion.BronzeIngestionSummary(
+            requested_dates=("2026-06-25",),
+            discovered_fixtures=0,
+            ingested_fixtures=0,
+            skipped_fixtures=0,
+            failed_fixtures=0,
+            fixture_ids=(),
+        )
+
+    monkeypatch.setattr(ingestion, "ingest_senior_mens_international_player_stats_bronze", fake_loader)
+
+    summary = ingestion.ingest_world_cup_player_stats_bronze(
+        spark=object(),
+        target_date="2026-06-25",
+        completed_only=False,
+    )
+
+    assert summary.requested_dates == ("2026-06-25",)
+    assert captured["kwargs"]["target_date"] == "2026-06-25"
+    assert captured["kwargs"]["completed_only"] is False
 
 
 def test_endpoint_ingestion_plan_skips_completed_unless_forced():

@@ -9,10 +9,19 @@ variables:
     description: Existing all-purpose or job cluster ID used to run notebook tasks.
   catalog:
     description: Unity Catalog catalog for managed football analytics tables.
-    default: main
-  schema:
-    description: Unity Catalog schema for managed football analytics tables.
-    default: football
+    default: football_analytics
+  bronze_schema:
+    description: Unity Catalog schema for Bronze ingestion tables.
+    default: bronze
+  silver_schema:
+    description: Unity Catalog schema for Silver normalized tables.
+    default: silver
+  gold_schema:
+    description: Unity Catalog schema for Gold feature tables.
+    default: gold
+  ops_schema:
+    description: Unity Catalog schema for audit, checkpoint, and dead-letter tables.
+    default: ops
   fixture_id:
     description: Optional API-Sports fixture ID for one-fixture manual runs.
     default: ""
@@ -31,13 +40,19 @@ targets:
     mode: development
     default: true
     variables:
-      catalog: main
-      schema: football_dev
+      catalog: football_analytics
+      bronze_schema: bronze_dev
+      silver_schema: silver_dev
+      gold_schema: gold_dev
+      ops_schema: ops_dev
       schedule_pause_status: PAUSED
 
   prod:
     mode: production
     variables:
-      catalog: main
-      schema: football
+      catalog: football_analytics
+      bronze_schema: bronze
+      silver_schema: silver
+      gold_schema: gold
+      ops_schema: ops
       schedule_pause_status: PAUSED

@@ -1,0 +1,87 @@
+resources:
+  jobs:
+    international_medallion_pipeline:
+      name: ${bundle.target}-international-medallion-pipeline
+      max_concurrent_runs: 1
+
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: UTC
+        pause_status: ${var.schedule_pause_status}
+
+      parameters:
+        - name: fixture_id
+          default: ${var.fixture_id}
+        - name: target_date
+          default: ""
+        - name: date_from
+          default: ""
+        - name: date_to
+          default: ""
+        - name: run_id
+          default: ${var.run_id}
+        - name: catalog
+          default: ${var.catalog}
+        - name: bronze_schema
+          default: ${var.bronze_schema}
+        - name: silver_schema
+          default: ${var.silver_schema}
+        - name: gold_schema
+          default: ${var.gold_schema}
+        - name: ops_schema
+          default: ${var.ops_schema}
+        - name: force_refresh
+          default: "false"
+        - name: include_lineups
+          default: "true"
+        - name: load_rankings_seed
+          default: "true"
+
+      tasks:
+        - task_key: prepare_run
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/00_prepare_run.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+              target_date: "{{job.parameters.target_date}}"
+              date_from: "{{job.parameters.date_from}}"
+              date_to: "{{job.parameters.date_to}}"
+              run_id: "{{job.run_id}}"
+              load_rankings_seed: "{{job.parameters.load_rankings_seed}}"
+
+        - task_key: bronze_ingest
+          depends_on:
+            - task_key: prepare_run
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/01_bronze_ingest.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+              target_date: "{{job.parameters.target_date}}"
+              date_from: "{{job.parameters.date_from}}"
+              date_to: "{{job.parameters.date_to}}"
+              run_id: "{{job.run_id}}"
+              force_refresh: "{{job.parameters.force_refresh}}"
+              include_lineups: "{{job.parameters.include_lineups}}"
+
+        - task_key: silver_normalize
+          depends_on:
+            - task_key: bronze_ingest
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/02_silver_normalize.py
+
+        - task_key: gold_build
+          depends_on:
+            - task_key: silver_normalize
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/03_gold_build.py
+
+        - task_key: quality_checks
+          depends_on:
+            - task_key: gold_build
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/04_quality_checks.py

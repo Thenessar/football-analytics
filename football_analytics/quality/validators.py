@@ -86,6 +86,7 @@ def validate_world_cup_fixture(
     season: int = EXPECTED_WORLD_CUP_SEASON,
     require_completed: bool = True,
 ) -> None:
+    """Legacy compatibility validator for World Cup 2026-specific callers."""
     league = fixture.get("league") or {}
     fixture_meta = fixture.get("fixture") or {}
     status = fixture_meta.get("status") or {}

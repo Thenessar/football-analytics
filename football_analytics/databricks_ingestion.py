@@ -16,7 +16,6 @@ from football_analytics.quality.validators import (
     SENIOR_MENS_NATIONAL_LEAGUE_IDS,
     ValidationError,
     validate_senior_mens_international_fixture,
-    validate_world_cup_fixture,
 )
 from football_analytics.storage.delta_io import build_merge_plan
 
@@ -560,9 +559,9 @@ def validate_or_quarantine_fixture(
     *,
     dead_letter_table: str = DEAD_LETTER_TABLE,
 ) -> bool:
-    """Returns True for valid World Cup fixtures and quarantines rejected records."""
+    """Returns True for eligible senior men's international fixtures."""
     try:
-        validate_world_cup_fixture(fixture)
+        validate_senior_mens_international_fixture(fixture)
         return True
     except ValidationError as error:
         quarantine_payload(
@@ -737,7 +736,7 @@ def read_fifa_rankings_seed_rows(
     return rows
 
 
-def fetch_international_fixtures_for_date(
+def fetch_senior_mens_international_fixtures_for_date(
     match_date: str,
     *,
     api_key: Optional[str] = None,
@@ -768,14 +767,30 @@ def fetch_international_fixtures_for_date(
     return fixtures
 
 
+def fetch_international_fixtures_for_date(
+    match_date: str,
+    *,
+    api_key: Optional[str] = None,
+    completed_only: bool = True,
+    allowed_league_ids: set[int] = SENIOR_MENS_NATIONAL_LEAGUE_IDS,
+) -> list[Mapping]:
+    """Legacy-neutral alias retained for existing callers."""
+    return fetch_senior_mens_international_fixtures_for_date(
+        match_date,
+        api_key=api_key,
+        completed_only=completed_only,
+        allowed_league_ids=allowed_league_ids,
+    )
+
+
 def fetch_world_cup_fixtures_for_date(
     match_date: str,
     *,
     api_key: Optional[str] = None,
     completed_only: bool = True,
 ) -> list[Mapping]:
-    """Backward-compatible wrapper for existing tests/callers."""
-    return fetch_international_fixtures_for_date(
+    """Legacy compatibility wrapper for World Cup-only callers."""
+    return fetch_senior_mens_international_fixtures_for_date(
         match_date,
         api_key=api_key,
         completed_only=completed_only,
@@ -1149,7 +1164,7 @@ def ingest_senior_mens_international_bronze(
     )
 
 
-def ingest_world_cup_player_stats_bronze(
+def ingest_senior_mens_international_player_stats_bronze(
     spark,
     *,
     api_key: Optional[str] = None,
@@ -1176,7 +1191,7 @@ def ingest_world_cup_player_stats_bronze(
     discovered = []
     skipped = 0
     for match_date in dates:
-        fixtures = fetch_international_fixtures_for_date(
+        fixtures = fetch_senior_mens_international_fixtures_for_date(
             match_date,
             api_key=api_key,
             completed_only=completed_only,
@@ -1201,6 +1216,28 @@ def ingest_world_cup_player_stats_bronze(
         skipped_fixtures=skipped + fixture_summary.skipped_fixtures,
         failed_fixtures=fixture_summary.failed_fixtures,
         fixture_ids=fixture_summary.fixture_ids,
+    )
+
+
+def ingest_world_cup_player_stats_bronze(
+    spark,
+    *,
+    api_key: Optional[str] = None,
+    target_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    completed_only: bool = True,
+    bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
+) -> BronzeIngestionSummary:
+    """Legacy compatibility wrapper for the senior men's international Bronze loader."""
+    return ingest_senior_mens_international_player_stats_bronze(
+        spark,
+        api_key=api_key,
+        target_date=target_date,
+        date_from=date_from,
+        date_to=date_to,
+        completed_only=completed_only,
+        bronze_path=bronze_path,
     )
 
 
