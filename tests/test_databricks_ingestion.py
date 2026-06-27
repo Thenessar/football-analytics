@@ -316,6 +316,56 @@ def test_fifa_seed_rows_are_typed_and_rating_typo_is_normalized():
     assert rows[0]["ranking_as_of_date"] == "2022-12-22"
 
 
+def test_fifa_seed_table_writer_uses_python_rows_not_spark_csv():
+    class ExplodingSparkReader:
+        def option(self, *args, **kwargs):
+            raise AssertionError("seed writer should not call spark.read.csv")
+
+    class CapturingWriter:
+        def __init__(self):
+            self.saved_table = None
+
+        def format(self, value):
+            assert value == "delta"
+            return self
+
+        def mode(self, value):
+            assert value == "overwrite"
+            return self
+
+        def option(self, key, value):
+            assert (key, value) == ("overwriteSchema", "true")
+            return self
+
+        def saveAsTable(self, table_name):
+            self.saved_table = table_name
+
+    class CapturingDataFrame:
+        def __init__(self, rows):
+            self.rows = rows
+            self.write = CapturingWriter()
+
+    class CapturingSpark:
+        read = ExplodingSparkReader()
+
+        def __init__(self):
+            self.created = None
+            self.schema = None
+
+        def createDataFrame(self, rows, schema):
+            self.created = CapturingDataFrame(rows)
+            self.schema = schema
+            return self.created
+
+    spark = CapturingSpark()
+
+    seed_df = ingestion.write_fifa_rankings_seed_table(spark, table_name="default.seed_test")
+
+    assert seed_df.write.saved_table == "default.seed_test"
+    assert spark.schema == "rank int, team_name string, rating double, ranking_as_of_date date"
+    assert spark.created.rows[0]["team_name"] == "Brazil"
+
+
 def test_accent_translation_map_is_valid_for_pyspark_translate():
     assert len(ingestion.ACCENTED_CHARS) == len(ingestion.ASCII_CHARS)
     assert "Á" in ingestion.ACCENTED_CHARS

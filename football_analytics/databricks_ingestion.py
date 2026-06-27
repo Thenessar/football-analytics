@@ -2,6 +2,7 @@ import csv
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 import requests
@@ -702,20 +703,40 @@ def write_fifa_rankings_seed_table(
     Materializes the December 2022 FIFA ranking CSV as a typed Delta seed table.
 
     The source CSV intentionally stays raw in git. This loader normalizes the
-    source typo `Raiting` to `rating` for downstream joins and modeling.
+    source typo `Raiting` to `rating` for downstream joins and modeling. Rows
+    are loaded through Python so Databricks does not treat the repo-relative
+    seed file as a Hadoop path.
     """
-    F, *_ = _require_pyspark()
-    seed_df = (
-        spark.read.option("header", True).csv(seed_file)
-        .select(
-            F.col("Rank").cast("int").alias("rank"),
-            F.col("Team").alias("team_name"),
-            F.col("Raiting").cast("double").alias("rating"),
-        )
-        .withColumn("ranking_as_of_date", F.to_date(F.lit(seed_as_of_date)))
+    rows = [
+        {
+            **row,
+            "ranking_as_of_date": date.fromisoformat(str(row["ranking_as_of_date"])),
+        }
+        for row in read_fifa_rankings_seed_rows(seed_file, seed_as_of_date=seed_as_of_date)
+    ]
+    seed_df = spark.createDataFrame(
+        rows,
+        "rank int, team_name string, rating double, ranking_as_of_date date",
     )
     seed_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
     return seed_df
+
+
+def resolve_local_seed_file(seed_file: str) -> str:
+    """Resolves repo-relative seed paths for local and Databricks bundle runs."""
+    path = Path(seed_file)
+    if path.is_absolute():
+        return str(path)
+
+    cwd_path = Path.cwd() / path
+    if cwd_path.exists():
+        return str(cwd_path)
+
+    repo_path = Path(__file__).resolve().parents[1] / path
+    if repo_path.exists():
+        return str(repo_path)
+
+    return str(path)
 
 
 def read_fifa_rankings_seed_rows(
@@ -725,7 +746,7 @@ def read_fifa_rankings_seed_rows(
 ) -> list[dict[str, object]]:
     """Reads the raw seed CSV into typed local rows, normalizing `Raiting`."""
     rows = []
-    with open(seed_file, newline="", encoding="utf-8") as handle:
+    with open(resolve_local_seed_file(seed_file), newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             rows.append({
                 "rank": int(row["Rank"]),
