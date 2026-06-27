@@ -5,12 +5,18 @@ from typing import Iterable, Mapping, Optional
 import requests
 
 from football_analytics.config import BASE_URL, HEADERS
+from football_analytics.api import FootballApiClient, is_quota_error_payload, payload_hash
+from football_analytics.api.exceptions import FootballApiPayloadError
+from football_analytics.api.exceptions import FootballApiQuotaError as SharedFootballApiQuotaError
 from football_analytics.modeling import build_empirical_bayes_shot_rate_pandas_udf
+from football_analytics.quality.validators import ValidationError, validate_world_cup_fixture
+from football_analytics.storage.delta_io import build_merge_plan
 
 BRONZE_FOOTBALL_MATCH_RAW_PATH = "/mnt/syndicate/bronze/football_match_raw"
 SILVER_PLAYER_MATCH_STATS_PATH = "/mnt/syndicate/silver/football_player_match_stats"
 GOLD_PLAYER_SAPM_PATH = "/mnt/syndicate/gold/football_player_sapm"
 INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_state_checkpoint"
+DEAD_LETTER_TABLE = "default.football_ingestion_dead_letter"
 CHECKPOINT_PENDING = "PENDING"
 CHECKPOINT_COMPLETED = "COMPLETED"
 QUOTA_ERROR_TOKENS = (
@@ -34,7 +40,7 @@ ASCII_CHARS = (
 )
 
 
-class FootballApiQuotaError(RuntimeError):
+class FootballApiQuotaError(SharedFootballApiQuotaError):
     """Raised when API-Football indicates a rate-limit or quota exhaustion event."""
 
 
@@ -147,6 +153,7 @@ def write_player_stats_bronze(
             int(fixture_id) if fixture_id is not None else None,
             source_endpoint,
             json.dumps(payload, ensure_ascii=False),
+            payload_hash(payload),
         )
         for payload in api_payloads
     ]
@@ -154,10 +161,84 @@ def write_player_stats_bronze(
         return
 
     bronze_df = (
-        spark.createDataFrame(rows, "fixture_id int, source_endpoint string, raw_payload string")
+        spark.createDataFrame(rows, "fixture_id int, source_endpoint string, raw_payload string, response_hash string")
         .withColumn("ingested_at_utc", F.current_timestamp())
     )
     bronze_df.write.format("delta").mode(mode).save(bronze_path)
+
+
+def quarantine_payload(
+    spark,
+    *,
+    payload: Mapping,
+    reason: str,
+    fixture_id: Optional[int] = None,
+    stage: str = "silver_validate",
+    dead_letter_table: str = DEAD_LETTER_TABLE,
+) -> None:
+    """Writes invalid payloads to a Delta dead-letter table for later inspection."""
+    F, *_ = _require_pyspark()
+    rows = [(
+        int(fixture_id) if fixture_id is not None else None,
+        stage,
+        reason,
+        json.dumps(payload, ensure_ascii=False),
+        payload_hash(payload),
+    )]
+    (
+        spark.createDataFrame(
+            rows,
+            "fixture_id int, stage string, reason string, raw_payload string, response_hash string",
+        )
+        .withColumn("quarantined_at_utc", F.current_timestamp())
+        .write
+        .format("delta")
+        .mode("append")
+        .saveAsTable(dead_letter_table)
+    )
+
+
+def validate_or_quarantine_fixture(
+    spark,
+    fixture: Mapping,
+    *,
+    dead_letter_table: str = DEAD_LETTER_TABLE,
+) -> bool:
+    """Returns True for valid World Cup fixtures and quarantines rejected records."""
+    try:
+        validate_world_cup_fixture(fixture)
+        return True
+    except ValidationError as error:
+        quarantine_payload(
+            spark,
+            payload=fixture,
+            reason=str(error),
+            fixture_id=(fixture.get("fixture") or {}).get("id"),
+            stage="fixture_validation",
+            dead_letter_table=dead_letter_table,
+        )
+        return False
+
+
+def natural_key_merge_plans() -> dict[str, object]:
+    """Documents deterministic Delta MERGE keys used by Databricks tasks."""
+    return {
+        "fixtures": build_merge_plan(
+            "silver.fixtures",
+            ("fixture_id",),
+            ("fixture_id", "league_id", "season", "status", "response_hash", "updated_at_utc"),
+        ),
+        "player_stats": build_merge_plan(
+            "silver.player_stats",
+            ("fixture_id", "team_id", "player_id"),
+            ("fixture_id", "team_id", "player_id", "minutes", "shots_total", "response_hash", "updated_at_utc"),
+        ),
+        "lineups": build_merge_plan(
+            "silver.lineups",
+            ("fixture_id", "team_id", "player_id"),
+            ("fixture_id", "team_id", "player_id", "position", "response_hash", "updated_at_utc"),
+        ),
+    }
 
 
 def fetch_football_api_payload(
@@ -168,27 +249,17 @@ def fetch_football_api_payload(
     base_url: str = BASE_URL,
 ) -> Mapping:
     """Fetches one complete Football-API response envelope for Bronze landing."""
-    headers = HEADERS.copy()
-    if api_key:
-        headers["x-rapidapi-key"] = api_key
-        headers["x-apisports-key"] = api_key
-
-    response = requests.get(
-        f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}",
-        headers=headers,
-        params=dict(params),
-        timeout=30,
+    client = FootballApiClient(
+        api_key=api_key,
+        base_url=base_url,
+        request_get=requests.get,
     )
-    _raise_if_quota_response(response)
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("errors"):
-        if is_quota_error_payload(payload):
-            raise FootballApiQuotaError(
-                f"API-Football quota/rate-limit error for {endpoint}: {payload['errors']}"
-            )
-        raise RuntimeError(f"Football-API returned errors for {endpoint}: {payload['errors']}")
-    return payload
+    try:
+        return client.get(endpoint, params)
+    except SharedFootballApiQuotaError as error:
+        raise FootballApiQuotaError(str(error)) from error
+    except FootballApiPayloadError as error:
+        raise RuntimeError(str(error).replace("API-Sports", "Football-API")) from error
 
 
 def ensure_ingestion_checkpoint_table(
