@@ -124,6 +124,170 @@ def test_ingest_world_cup_player_stats_bronze_discovers_fixture_range(monkeypatc
     assert summary.as_dict()["ingested_fixtures"] == 2
 
 
+def test_endpoint_ingestion_plan_skips_completed_unless_forced():
+    plan = ingestion.endpoint_ingestion_plan([101, 102, 102, 103], completed_fixture_ids=[102])
+
+    assert plan.fixture_ids_to_fetch == (101, 103)
+    assert plan.skipped_fixture_ids == (102,)
+
+    forced = ingestion.endpoint_ingestion_plan([101, 102], completed_fixture_ids=[102], force_refresh=True)
+
+    assert forced.fixture_ids_to_fetch == (101, 102)
+    assert forced.skipped_fixture_ids == ()
+
+
+def test_senior_mens_fixture_filter_excludes_club_women_youth_and_keeps_allowed():
+    payload = {
+        "response": [
+            {"fixture": {"id": 1, "status": {"short": "FT"}}, "league": {"id": 1, "name": "World Cup"}},
+            {"fixture": {"id": 2, "status": {"short": "FT"}}, "league": {"id": 667, "name": "Club Friendlies"}},
+            {"fixture": {"id": 3, "status": {"short": "FT"}}, "league": {"name": "World Cup - Women"}},
+            {"fixture": {"id": 4, "status": {"short": "FT"}}, "league": {"id": 5, "name": "UEFA Nations League"}},
+            {"fixture": {"id": 5, "status": {"short": "FT"}}, "league": {"name": "U21 Championship"}},
+        ]
+    }
+
+    eligible, skipped = ingestion.split_senior_mens_international_fixtures(payload)
+
+    assert [item["fixture"]["id"] for item in eligible] == [1, 4]
+    assert [item["fixture"]["id"] for item in skipped] == [2, 3, 5]
+
+
+def test_bronze_fixture_metadata_rows_include_request_hash_and_run_context():
+    payload = {"response": [{"fixture": {"id": 1}}]}
+
+    rows = ingestion._json_payload_rows(
+        [payload],
+        run_id="run-1",
+        source_endpoint=ingestion.FIXTURES_ENDPOINT,
+        request_params={"date": "2026-06-25", "timezone": "UTC"},
+        target_date="2026-06-25",
+    )
+
+    assert rows[0][0] == "run-1"
+    assert rows[0][2] == "fixtures"
+    assert rows[0][4] == "2026-06-25"
+    assert rows[0][6] == ingestion.payload_hash(payload)
+
+
+def test_player_stats_skips_completed_fixture_ids(monkeypatch):
+    called_fixture_ids = []
+
+    def fake_fetch(endpoint, params, *, api_key=None):
+        called_fixture_ids.append(params["fixture"])
+        return {"response": [{"team": {"id": 1}, "players": []}]}
+
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+
+    summary = ingestion.ingest_player_stats_for_fixtures_to_bronze(
+        spark=None,
+        fixture_ids=[10, 11],
+        completed_fixture_ids=[10],
+    )
+
+    assert called_fixture_ids == [11]
+    assert summary.skipped_fixtures == 1
+    assert summary.player_stat_payloads_ingested == 1
+
+
+def test_player_stats_force_refresh_refetches_completed_fixture_ids(monkeypatch):
+    called_fixture_ids = []
+
+    def fake_fetch(endpoint, params, *, api_key=None):
+        called_fixture_ids.append(params["fixture"])
+        return {"response": [{"team": {"id": 1}, "players": []}]}
+
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+
+    ingestion.ingest_player_stats_for_fixtures_to_bronze(
+        spark=None,
+        fixture_ids=[10, 11],
+        completed_fixture_ids=[10],
+        force_refresh=True,
+    )
+
+    assert called_fixture_ids == [10, 11]
+
+
+def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypatch):
+    discovery = ingestion.FixtureDiscoveryResult(
+        target_date="2026-06-25",
+        raw_payload={"response": [{"fixture": {"id": 100}}, {"fixture": {"id": 200}}]},
+        eligible_fixtures=({"fixture": {"id": 100}},),
+        skipped_fixtures=({"fixture": {"id": 200}},),
+    )
+    player_fixture_ids = []
+
+    monkeypatch.setattr(
+        ingestion,
+        "discover_senior_mens_fixtures_for_date",
+        lambda *args, **kwargs: discovery,
+    )
+
+    def fake_player_ingest(spark, fixture_ids, **kwargs):
+        player_fixture_ids.extend(fixture_ids)
+        return ingestion.BronzeIngestionSummary(
+            requested_dates=(),
+            discovered_fixtures=len(fixture_ids),
+            ingested_fixtures=len(fixture_ids),
+            skipped_fixtures=0,
+            failed_fixtures=0,
+            fixture_ids=tuple(fixture_ids),
+            player_stat_payloads_ingested=len(fixture_ids),
+        )
+
+    monkeypatch.setattr(ingestion, "ingest_player_stats_for_fixtures_to_bronze", fake_player_ingest)
+
+    summary = ingestion.ingest_senior_mens_international_bronze(
+        spark=None,
+        target_date="2026-06-25",
+        include_lineups=False,
+    )
+
+    assert player_fixture_ids == [100]
+    assert summary.discovered_fixtures == 2
+    assert summary.eligible_fixtures == 1
+
+
+def test_lineup_empty_response_is_skipped_not_failed(monkeypatch):
+    monkeypatch.setattr(
+        ingestion,
+        "fetch_football_api_payload",
+        lambda endpoint, params, *, api_key=None: {"response": []},
+    )
+
+    summary = ingestion.ingest_lineups_for_fixtures_to_bronze(
+        spark=None,
+        fixture_ids=[1489437],
+    )
+
+    assert summary.lineups_ingested == 0
+    assert summary.lineups_skipped == 1
+    assert summary.failed_fixtures == 0
+
+
+def test_delta_merge_sql_uses_natural_key_predicate_and_updates_non_keys():
+    sql = ingestion.build_delta_merge_sql(
+        "delta.`/tmp/silver`",
+        "_updates",
+        ("fixture_id", "team_id", "player_id"),
+        ("fixture_id", "team_id", "player_id", "shots_total", "updated_at_utc"),
+    )
+
+    assert "target.fixture_id <=> source.fixture_id" in sql
+    assert "shots_total = source.shots_total" in sql
+    assert "WHEN NOT MATCHED THEN INSERT" in sql
+
+
+def test_fifa_seed_rows_are_typed_and_rating_typo_is_normalized():
+    rows = ingestion.read_fifa_rankings_seed_rows()
+
+    assert rows[0]["rank"] == 1
+    assert rows[0]["team_name"] == "Brazil"
+    assert isinstance(rows[0]["rating"], float)
+    assert rows[0]["ranking_as_of_date"] == "2022-12-22"
+
+
 def test_accent_translation_map_is_valid_for_pyspark_translate():
     assert len(ingestion.ACCENTED_CHARS) == len(ingestion.ASCII_CHARS)
     assert "Á" in ingestion.ACCENTED_CHARS
