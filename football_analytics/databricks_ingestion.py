@@ -11,7 +11,12 @@ from football_analytics.api import FootballApiClient, is_quota_error_payload, pa
 from football_analytics.api.exceptions import FootballApiPayloadError
 from football_analytics.api.exceptions import FootballApiQuotaError as SharedFootballApiQuotaError
 from football_analytics.modeling import build_empirical_bayes_shot_rate_pandas_udf
-from football_analytics.quality.validators import ValidationError, validate_world_cup_fixture
+from football_analytics.quality.validators import (
+    SENIOR_MENS_NATIONAL_LEAGUE_IDS,
+    ValidationError,
+    validate_senior_mens_international_fixture,
+    validate_world_cup_fixture,
+)
 from football_analytics.storage.delta_io import build_merge_plan
 
 BRONZE_FOOTBALL_MATCH_RAW_PATH = "/mnt/syndicate/bronze/football_match_raw"
@@ -327,13 +332,14 @@ def write_fifa_rankings_seed_table(
     return seed_df
 
 
-def fetch_world_cup_fixtures_for_date(
+def fetch_international_fixtures_for_date(
     match_date: str,
     *,
     api_key: Optional[str] = None,
     completed_only: bool = True,
+    allowed_league_ids: set[int] = SENIOR_MENS_NATIONAL_LEAGUE_IDS,
 ) -> list[Mapping]:
-    """Discovers valid World Cup fixtures for one UTC date."""
+    """Discovers senior men's national-team fixtures for one UTC date."""
     payload = fetch_football_api_payload(
         "fixtures",
         {"date": match_date, "timezone": "UTC"},
@@ -342,8 +348,9 @@ def fetch_world_cup_fixtures_for_date(
     fixtures = []
     for fixture in payload.get("response", []):
         try:
-            validate_world_cup_fixture(
+            validate_senior_mens_international_fixture(
                 fixture,
+                allowed_league_ids=allowed_league_ids,
                 require_completed=completed_only,
             )
         except ValidationError:
@@ -354,6 +361,21 @@ def fetch_world_cup_fixtures_for_date(
                 continue
         fixtures.append(fixture)
     return fixtures
+
+
+def fetch_world_cup_fixtures_for_date(
+    match_date: str,
+    *,
+    api_key: Optional[str] = None,
+    completed_only: bool = True,
+) -> list[Mapping]:
+    """Backward-compatible wrapper for existing tests/callers."""
+    return fetch_international_fixtures_for_date(
+        match_date,
+        api_key=api_key,
+        completed_only=completed_only,
+        allowed_league_ids={1},
+    )
 
 
 def ingest_player_stats_for_fixtures_to_bronze(
@@ -404,7 +426,7 @@ def ingest_world_cup_player_stats_bronze(
     bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
 ) -> BronzeIngestionSummary:
     """
-    Discovers World Cup fixtures by UTC date/range, then lands player stats in Bronze.
+    Discovers senior men's international fixtures by UTC date/range, then lands player stats in Bronze.
 
     Daily scheduled runs pass `target_date`. Historical backfills pass
     `date_from` and `date_to`. The downstream Silver transform deduplicates on
@@ -420,7 +442,7 @@ def ingest_world_cup_player_stats_bronze(
     discovered = []
     skipped = 0
     for match_date in dates:
-        fixtures = fetch_world_cup_fixtures_for_date(
+        fixtures = fetch_international_fixtures_for_date(
             match_date,
             api_key=api_key,
             completed_only=completed_only,
