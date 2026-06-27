@@ -1,0 +1,12 @@
+# Copy these values into a local Databricks bundle variable override if you use one.
+# Do not commit personal workspace IDs, tokens, or cluster IDs.
+bundle:
+  target: dev
+
+variables:
+  cluster_id: "0123-456789-yourcluster"
+  fixture_id: "1489437"
+  catalog: "main"
+  schema: "football_dev"
+  schedule_pause_status: "PAUSED"
+
