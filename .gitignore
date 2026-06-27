@@ -87,6 +87,7 @@ Thumbs.db
 # Project-specific temporary and output files
 tmp/
 output/
+.databricks/
 *.parquet
 *.pdf
 

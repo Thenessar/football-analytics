@@ -1,0 +1,64 @@
+resources:
+  jobs:
+    worldcup_pipeline:
+      name: ${bundle.target}-worldcup-pipeline
+      max_concurrent_runs: 1
+
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: UTC
+        pause_status: ${var.schedule_pause_status}
+
+      parameters:
+        - name: fixture_id
+          default: ${var.fixture_id}
+        - name: run_id
+          default: ${var.run_id}
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: league_id
+          default: "1"
+        - name: season
+          default: "2026"
+
+      tasks:
+        - task_key: orchestrate_worldcup_run
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/05_orchestrate_worldcup_run.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+              run_id: "{{job.run_id}}"
+
+        - task_key: bronze_api_ingest
+          depends_on:
+            - task_key: orchestrate_worldcup_run
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/01_bronze_api_ingest.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+
+        - task_key: silver_validate_normalize
+          depends_on:
+            - task_key: bronze_api_ingest
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/02_silver_validate_normalize.py
+
+        - task_key: gold_feature_build
+          depends_on:
+            - task_key: silver_validate_normalize
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/03_gold_feature_build.py
+
+        - task_key: pipeline_quality_checks
+          depends_on:
+            - task_key: gold_feature_build
+          existing_cluster_id: ${var.cluster_id}
+          notebook_task:
+            notebook_path: ../notebooks/04_pipeline_quality_checks.py
+
