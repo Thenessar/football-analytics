@@ -1739,6 +1739,10 @@ def build_gold_team_match_context(
         .unionByName(away_rows)
         .withColumn("team_name_normalized", normalized_name_sql("team_name"))
         .withColumn("opponent_team_name_normalized", normalized_name_sql("opponent_team_name"))
+        .withColumn("game_importance_scalar", F.lit(1.0))
+        .withColumn("opponent_strength_adjustment", F.lit(1.0))
+        .withColumn("defensive_containment_rating", F.lit(1.0))
+        .withColumn("defensive_elo", F.lit(1500.0))
         .withColumn("updated_at_utc", F.current_timestamp())
     )
     write_delta_target(gold, gold_path, mode=mode, overwrite_schema=True)
@@ -1857,18 +1861,31 @@ def transform_silver_to_gold_sapm(
         )
 
     if fixture_context_path:
-        context = read_delta_target(spark, fixture_context_path).select(
+        context_source = read_delta_target(spark, fixture_context_path)
+        context_columns = set(context_source.columns)
+        context_select = [
             F.col("fixture_id").cast("int").alias("context_fixture_id"),
             F.col("game_importance_scalar").cast("double"),
             F.col("opponent_strength_adjustment").cast("double"),
             F.col("defensive_containment_rating").cast("double"),
             F.col("defensive_elo").cast("double"),
-        )
-        enriched = enriched.join(
-            context,
-            enriched.fixture_id == context.context_fixture_id,
-            "left",
-        ).drop("context_fixture_id")
+        ]
+        if "team_id" in context_columns:
+            context_select.append(F.col("team_id").cast("int").alias("context_team_id"))
+        context = context_source.select(*context_select)
+        if "team_id" in context_columns:
+            enriched = enriched.join(
+                context,
+                (enriched.fixture_id == context.context_fixture_id)
+                & (enriched.team_id == context.context_team_id),
+                "left",
+            ).drop("context_fixture_id", "context_team_id")
+        else:
+            enriched = enriched.join(
+                context,
+                enriched.fixture_id == context.context_fixture_id,
+                "left",
+            ).drop("context_fixture_id")
     else:
         enriched = (
             enriched
