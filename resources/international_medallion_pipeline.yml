@@ -48,6 +48,11 @@ resources:
               date_from: "{{job.parameters.date_from}}"
               date_to: "{{job.parameters.date_to}}"
               run_id: "{{job.run_id}}"
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+              ops_schema: "{{job.parameters.ops_schema}}"
               load_rankings_seed: "{{job.parameters.load_rankings_seed}}"
 
         - task_key: bronze_ingest
@@ -62,6 +67,11 @@ resources:
               date_from: "{{job.parameters.date_from}}"
               date_to: "{{job.parameters.date_to}}"
               run_id: "{{job.run_id}}"
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+              ops_schema: "{{job.parameters.ops_schema}}"
               force_refresh: "{{job.parameters.force_refresh}}"
               include_lineups: "{{job.parameters.include_lineups}}"
 
@@ -78,6 +88,12 @@ resources:
           existing_cluster_id: ${var.cluster_id}
           notebook_task:
             notebook_path: ../notebooks/03_gold_build.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+              ops_schema: "{{job.parameters.ops_schema}}"
 
         - task_key: quality_checks
           depends_on:

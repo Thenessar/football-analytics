@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pytest
 
@@ -40,6 +41,21 @@ def test_databricks_table_names_use_layer_schemas():
     assert table_name(config, "ops", "audit") == "fa.ops.audit"
     with pytest.raises(ValueError, match="Unsupported medallion layer"):
         table_name(config, "platinum", "x")
+
+
+def test_bundle_passes_catalog_schema_parameters_to_table_aware_tasks():
+    bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
+
+    for task_name in ("prepare_run", "bronze_ingest", "gold_build"):
+        match = re.search(
+            rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+            bundle,
+            flags=re.S,
+        )
+        assert match is not None
+        task_block = match.group("task")
+        for parameter in ("catalog", "bronze_schema", "silver_schema", "gold_schema", "ops_schema"):
+            assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 
 def test_databricks_notebook_files_match_medallion_order():

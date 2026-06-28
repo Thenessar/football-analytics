@@ -1,5 +1,6 @@
 # Databricks notebook source
-from football_analytics.databricks.config import load_config_from_env
+from football_analytics.databricks.config import DatabricksPipelineConfig, load_config_from_env
+from football_analytics.databricks.tables import table_name
 from football_analytics.databricks_ingestion import (
     ingest_fixture_player_stats_to_delta,
     ingest_senior_mens_international_bronze,
@@ -11,10 +12,23 @@ dbutils.widgets.text("target_date", "")
 dbutils.widgets.text("date_from", "")
 dbutils.widgets.text("date_to", "")
 dbutils.widgets.text("run_id", "")
+dbutils.widgets.text("catalog", "football_analytics")
+dbutils.widgets.text("bronze_schema", "bronze")
+dbutils.widgets.text("silver_schema", "silver")
+dbutils.widgets.text("gold_schema", "gold")
+dbutils.widgets.text("ops_schema", "ops")
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.dropdown("include_lineups", "true", ["true", "false"])
 
-config = load_config_from_env()
+env_config = load_config_from_env()
+config = DatabricksPipelineConfig(
+    catalog=dbutils.widgets.get("catalog"),
+    bronze_schema=dbutils.widgets.get("bronze_schema"),
+    silver_schema=dbutils.widgets.get("silver_schema"),
+    gold_schema=dbutils.widgets.get("gold_schema"),
+    ops_schema=dbutils.widgets.get("ops_schema"),
+    api_key=env_config.api_key,
+)
 fixture_id = dbutils.widgets.get("fixture_id").strip()
 target_date = dbutils.widgets.get("target_date").strip()
 date_from = dbutils.widgets.get("date_from").strip()
@@ -41,6 +55,7 @@ else:
         date_to=date_to or None,
         force_refresh=force_refresh,
         include_lineups=include_lineups,
+        checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
     )
     display(summary.as_dict())
     silver_df = transform_bronze_to_silver(spark)

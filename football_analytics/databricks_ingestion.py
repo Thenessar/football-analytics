@@ -1114,6 +1114,11 @@ def ingest_senior_mens_international_bronze(
     force_refresh: bool = False,
     include_lineups: bool = True,
     required_fixture_ids: Optional[Iterable[int]] = None,
+    bronze_fixtures_path: str = BRONZE_FIXTURES_RAW_PATH,
+    bronze_eligibility_path: str = BRONZE_FIXTURES_ELIGIBILITY_PATH,
+    bronze_player_stats_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
+    bronze_lineups_path: str = BRONZE_LINEUPS_RAW_PATH,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
 ) -> BronzeIngestionSummary:
     """Runs Bronze fixture discovery plus eligible player-stat/lineup ingestion."""
     if target_date:
@@ -1139,6 +1144,9 @@ def ingest_senior_mens_international_bronze(
             run_id=active_run_id,
             api_key=api_key,
             completed_only=completed_only,
+            bronze_fixtures_path=bronze_fixtures_path,
+            bronze_eligibility_path=bronze_eligibility_path,
+            checkpoint_table=checkpoint_table,
         )
         discovered_count += len(discovery.raw_payload.get("response", []))
         skipped_fixture_count += len(discovery.skipped_fixtures)
@@ -1152,6 +1160,8 @@ def ingest_senior_mens_international_bronze(
             run_id=active_run_id,
             target_date=match_date,
             force_refresh=force_refresh,
+            bronze_path=bronze_player_stats_path,
+            checkpoint_table=checkpoint_table,
         )
         player_ingested += player_summary.player_stat_payloads_ingested
         skipped_fixture_count += player_summary.skipped_fixtures
@@ -1166,6 +1176,8 @@ def ingest_senior_mens_international_bronze(
                 target_date=match_date,
                 force_refresh=force_refresh,
                 required_fixture_ids=required_fixture_ids,
+                bronze_path=bronze_lineups_path,
+                checkpoint_table=checkpoint_table,
             )
             lineups_ingested += lineup_summary.lineups_ingested
             lineups_skipped += lineup_summary.lineups_skipped
