@@ -43,6 +43,8 @@ if fixture_id:
         spark,
         int(fixture_id),
         api_key=api_key,
+        bronze_path=table_name(config, "bronze", "football_match_raw"),
+        silver_path=table_name(config, "silver", "football_player_match_stats"),
     )
     display({"mode": "fixture_id", "fixture_id": int(fixture_id)})
 else:
@@ -55,9 +57,17 @@ else:
         date_to=date_to or None,
         force_refresh=force_refresh,
         include_lineups=include_lineups,
+        bronze_fixtures_path=table_name(config, "bronze", "football_fixtures_raw"),
+        bronze_eligibility_path=table_name(config, "bronze", "football_fixture_eligibility"),
+        bronze_player_stats_path=table_name(config, "bronze", "football_match_raw"),
+        bronze_lineups_path=table_name(config, "bronze", "football_lineups_raw"),
         checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
     )
     display(summary.as_dict())
-    silver_df = transform_bronze_to_silver(spark)
+    silver_df = transform_bronze_to_silver(
+        spark,
+        bronze_path=table_name(config, "bronze", "football_match_raw"),
+        silver_path=table_name(config, "silver", "football_player_match_stats"),
+    )
 
 display(silver_df.limit(20))
