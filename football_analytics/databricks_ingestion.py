@@ -12,7 +12,6 @@ from football_analytics.config import FIFA_RANKINGS_SEED_AS_OF_DATE, FIFA_RANKIN
 from football_analytics.api import FootballApiClient, is_quota_error_payload, payload_hash
 from football_analytics.api.exceptions import FootballApiPayloadError
 from football_analytics.api.exceptions import FootballApiQuotaError as SharedFootballApiQuotaError
-from football_analytics.modeling import build_empirical_bayes_shot_rate_pandas_udf
 from football_analytics.quality.validators import (
     SENIOR_MENS_NATIONAL_LEAGUE_IDS,
     ValidationError,
@@ -1829,7 +1828,6 @@ def transform_silver_to_gold_sapm(
     neutral priors and weights so the transform remains deterministic.
     """
     F, *_ = _require_pyspark()
-    smoothed_shot_rate_udf = build_empirical_bayes_shot_rate_pandas_udf()
 
     silver = read_delta_target(spark, silver_path)
     enriched = silver.withColumn(
@@ -1901,12 +1899,14 @@ def transform_silver_to_gold_sapm(
         .withColumn("prior_beta", F.coalesce(F.col("prior_beta"), F.lit(270.0)))
         .withColumn("game_importance_scalar", F.coalesce(F.col("game_importance_scalar"), F.lit(1.0)))
         .withColumn("opponent_strength_adjustment", F.coalesce(F.col("opponent_strength_adjustment"), F.lit(1.0)))
-        .withColumn("shot_rate_smoothed_per_minute", smoothed_shot_rate_udf(
-            F.col("shots_total"),
-            F.col("games_minutes"),
-            F.col("prior_alpha"),
-            F.col("prior_beta"),
-        ))
+        .withColumn(
+            "shot_rate_smoothed_per_minute",
+            F.when(
+                (F.col("prior_beta") + F.col("games_minutes")) > 0,
+                (F.col("prior_alpha") + F.col("shots_total"))
+                / (F.col("prior_beta") + F.col("games_minutes")),
+            ).otherwise(F.lit(0.0)),
+        )
         .withColumn(
             "sapm_interaction_weight",
             F.col("game_importance_scalar") * F.col("opponent_strength_adjustment"),
