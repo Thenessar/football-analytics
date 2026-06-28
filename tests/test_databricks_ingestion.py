@@ -313,6 +313,67 @@ def test_delta_merge_sql_uses_natural_key_predicate_and_updates_non_keys():
     assert "WHEN NOT MATCHED THEN INSERT" in sql
 
 
+def test_managed_table_merge_bootstrap_checks_catalog_before_reading():
+    class ExplodingSpark:
+        class Catalog:
+            def tableExists(self, table_name):
+                assert table_name == "football_analytics.silver.football_lineups"
+                return False
+
+        catalog = Catalog()
+
+        def table(self, table_name):
+            raise AssertionError("missing managed tables should not be read before bootstrap")
+
+        def sql(self, statement):
+            raise AssertionError("first-run bootstrap should write, not merge")
+
+    class CapturingWriter:
+        def __init__(self):
+            self.saved_table = None
+            self.options = {}
+
+        def format(self, value):
+            assert value == "delta"
+            return self
+
+        def mode(self, value):
+            assert value == "overwrite"
+            return self
+
+        def option(self, key, value):
+            self.options[key] = value
+            return self
+
+        def saveAsTable(self, table_name):
+            self.saved_table = table_name
+
+    class CapturingDataFrame:
+        def __init__(self):
+            self.write = CapturingWriter()
+
+        @property
+        def columns(self):
+            return ["fixture_id", "team_id", "player_id"]
+
+        def createOrReplaceTempView(self, name):
+            raise AssertionError("first-run bootstrap should not create a merge view")
+
+    spark = ExplodingSpark()
+    dataframe = CapturingDataFrame()
+
+    ingestion.merge_dataframe_to_delta_path(
+        spark,
+        dataframe,
+        target_path="football_analytics.silver.football_lineups",
+        keys=("fixture_id", "team_id", "player_id"),
+        temp_view="_silver_lineups_updates",
+    )
+
+    assert dataframe.write.saved_table == "football_analytics.silver.football_lineups"
+    assert dataframe.write.options == {"overwriteSchema": "true"}
+
+
 def test_fifa_seed_rows_are_typed_and_rating_typo_is_normalized():
     rows = ingestion.read_fifa_rankings_seed_rows()
 
