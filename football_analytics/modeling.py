@@ -102,37 +102,6 @@ def empirical_bayes_smoothed_shot_rate(
     return (numerator / denominator.replace(0, np.nan)).fillna(0.0)
 
 
-def build_empirical_bayes_shot_rate_pandas_udf():
-    """
-    Builds the Databricks Pandas UDF for distributed Silver-to-Gold shrinkage.
-
-    The import is intentionally lazy so local modeling tests do not require a
-    Spark installation.
-    """
-    try:
-        from pyspark.sql.functions import pandas_udf
-        from pyspark.sql.types import DoubleType
-    except ImportError as error:
-        raise RuntimeError(
-            "PySpark is required to build the Empirical Bayes Pandas UDF."
-        ) from error
-
-    @pandas_udf(DoubleType())
-    def smoothed_shot_rate_udf(
-        observed_shots: pd.Series,
-        minutes_played: pd.Series,
-        alpha: pd.Series,
-        beta: pd.Series,
-    ) -> pd.Series:
-        return empirical_bayes_smoothed_shot_rate(
-            observed_shots,
-            minutes_played,
-            alpha,
-            beta,
-        )
-
-    return smoothed_shot_rate_udf
-
 def calculate_common_opponent_modifiers(
     team_home: str, 
     team_away: str, 
