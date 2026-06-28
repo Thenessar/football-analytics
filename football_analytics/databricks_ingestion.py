@@ -82,6 +82,16 @@ def read_delta_target(spark, target: str):
     return spark.read.format("delta").load(target)
 
 
+def delta_target_exists(spark, target: str) -> bool:
+    if is_delta_table_target(target):
+        return bool(spark.catalog.tableExists(target))
+    try:
+        spark.read.format("delta").load(target).limit(1).count()
+        return True
+    except Exception:
+        return False
+
+
 def write_delta_target(dataframe, target: str, *, mode: str, overwrite_schema: bool = False) -> None:
     writer = dataframe.write.format("delta").mode(mode)
     if overwrite_schema:
@@ -680,9 +690,7 @@ def merge_dataframe_to_delta_path(
     temp_view: str,
 ) -> None:
     """Upserts a DataFrame into a Delta path or catalog table, bootstrapping on first run."""
-    try:
-        read_delta_target(spark, target_path).limit(1).count()
-    except Exception:
+    if not delta_target_exists(spark, target_path):
         write_delta_target(dataframe, target_path, mode="overwrite", overwrite_schema=True)
         return
 
