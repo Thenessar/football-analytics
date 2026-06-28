@@ -9,6 +9,12 @@ def test_delta_paths_match_bronze_and_silver_contract():
     assert ingestion.INGESTION_STATE_CHECKPOINT_TABLE == "default.ingestion_state_checkpoint"
 
 
+def test_delta_target_detection_distinguishes_tables_from_paths():
+    assert ingestion.is_delta_table_target("football_analytics.bronze.football_match_raw")
+    assert not ingestion.is_delta_table_target("/mnt/syndicate/bronze/football_match_raw")
+    assert not ingestion.is_delta_table_target("dbfs:/mnt/syndicate/bronze/football_match_raw")
+
+
 def test_weekly_windows_are_deterministic_from_anchor():
     assert ingestion.iter_weekly_windows("2022-11-07", "2022-11-20") == [
         ("2022-11-07", "2022-11-13"),

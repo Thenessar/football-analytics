@@ -66,6 +66,32 @@ ASCII_CHARS = (
 )
 
 
+def is_delta_table_target(target: str) -> bool:
+    """Returns True when a Delta target is a catalog table, not a filesystem path."""
+    return not (
+        target.startswith("/")
+        or target.startswith("dbfs:")
+        or "://" in target
+        or target.startswith("delta.`")
+    )
+
+
+def read_delta_target(spark, target: str):
+    if is_delta_table_target(target):
+        return spark.table(target)
+    return spark.read.format("delta").load(target)
+
+
+def write_delta_target(dataframe, target: str, *, mode: str, overwrite_schema: bool = False) -> None:
+    writer = dataframe.write.format("delta").mode(mode)
+    if overwrite_schema:
+        writer = writer.option("overwriteSchema", "true")
+    if is_delta_table_target(target):
+        writer.saveAsTable(target)
+    else:
+        writer.save(target)
+
+
 class FootballApiQuotaError(SharedFootballApiQuotaError):
     """Raised when API-Football indicates a rate-limit or quota exhaustion event."""
 
@@ -363,7 +389,7 @@ def write_player_stats_bronze(
         spark.createDataFrame(rows, "fixture_id int, source_endpoint string, raw_payload string, response_hash string")
         .withColumn("ingested_at_utc", F.current_timestamp())
     )
-    bronze_df.write.format("delta").mode(mode).save(bronze_path)
+    write_delta_target(bronze_df, bronze_path, mode=mode)
 
 
 def _json_payload_rows(
@@ -415,7 +441,7 @@ def write_bronze_raw_envelopes(
     )
     if not rows:
         return
-    (
+    envelopes = (
         spark.createDataFrame(
             rows,
             (
@@ -426,11 +452,8 @@ def write_bronze_raw_envelopes(
         )
         .withColumn("target_date", F.to_date("target_date"))
         .withColumn("ingested_at_utc", F.current_timestamp())
-        .write
-        .format("delta")
-        .mode(mode)
-        .save(bronze_path)
     )
+    write_delta_target(envelopes, bronze_path, mode=mode)
 
 
 def write_fixtures_bronze(
@@ -480,7 +503,7 @@ def write_fixture_eligibility_bronze(
         ))
     if not rows:
         return
-    (
+    eligibility = (
         spark.createDataFrame(
             rows,
             (
@@ -490,11 +513,8 @@ def write_fixture_eligibility_bronze(
         )
         .withColumn("target_date", F.to_date("target_date"))
         .withColumn("ingested_at_utc", F.current_timestamp())
-        .write
-        .format("delta")
-        .mode("append")
-        .save(bronze_path)
     )
+    write_delta_target(eligibility, bronze_path, mode="append")
 
 
 def write_lineups_bronze(
@@ -659,15 +679,15 @@ def merge_dataframe_to_delta_path(
     keys: Sequence[str],
     temp_view: str,
 ) -> None:
-    """Upserts a DataFrame into a Delta path, bootstrapping the path on first run."""
+    """Upserts a DataFrame into a Delta path or catalog table, bootstrapping on first run."""
     try:
-        spark.read.format("delta").load(target_path).limit(1).count()
+        read_delta_target(spark, target_path).limit(1).count()
     except Exception:
-        dataframe.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(target_path)
+        write_delta_target(dataframe, target_path, mode="overwrite", overwrite_schema=True)
         return
 
     dataframe.createOrReplaceTempView(temp_view)
-    target = f"delta.`{target_path}`"
+    target = target_path if is_delta_table_target(target_path) else f"delta.`{target_path}`"
     spark.sql(build_delta_merge_sql(target, temp_view, keys, tuple(dataframe.columns)))
 
 
@@ -1511,7 +1531,7 @@ def transform_bronze_fixtures_to_silver(
     """Normalizes raw `/fixtures` envelopes into the Silver fixtures table."""
     F, *_ = _require_pyspark()
     schema = _football_api_fixtures_schema()
-    bronze = spark.read.format("delta").load(bronze_path)
+    bronze = read_delta_target(spark, bronze_path)
     parsed = bronze.withColumn("payload", F.from_json(F.col("raw_payload"), schema))
     flattened = parsed.withColumn("fixture_entry", F.explode_outer("payload.response"))
     silver = (
@@ -1547,7 +1567,7 @@ def transform_bronze_fixtures_to_silver(
             temp_view="_silver_fixtures_updates",
         )
     else:
-        silver.write.format("delta").mode(mode).option("overwriteSchema", "true").save(silver_path)
+        write_delta_target(silver, silver_path, mode=mode, overwrite_schema=True)
     return silver
 
 
@@ -1567,7 +1587,7 @@ def transform_bronze_to_silver(
     F, *_ = _require_pyspark()
     schema = _football_api_player_stats_schema()
 
-    bronze = spark.read.format("delta").load(bronze_path)
+    bronze = read_delta_target(spark, bronze_path)
     parsed = bronze.withColumn("payload", F.from_json(F.col("raw_payload"), schema))
     flattened = (
         parsed
@@ -1607,7 +1627,7 @@ def transform_bronze_to_silver(
             temp_view="_silver_player_stats_updates",
         )
     else:
-        silver.write.format("delta").mode(mode).option("overwriteSchema", "true").save(silver_path)
+        write_delta_target(silver, silver_path, mode=mode, overwrite_schema=True)
     return silver
 
 
@@ -1621,7 +1641,7 @@ def transform_bronze_lineups_to_silver(
     """Normalizes raw `/fixtures/lineups` envelopes into Silver lineup rows."""
     F, *_ = _require_pyspark()
     schema = _football_api_lineups_schema()
-    bronze = spark.read.format("delta").load(bronze_path)
+    bronze = read_delta_target(spark, bronze_path)
     parsed = bronze.withColumn("payload", F.from_json(F.col("raw_payload"), schema))
     team_rows = parsed.withColumn("team_entry", F.explode_outer("payload.response"))
     starters = (
@@ -1662,7 +1682,7 @@ def transform_bronze_lineups_to_silver(
             temp_view="_silver_lineups_updates",
         )
     else:
-        silver.write.format("delta").mode(mode).option("overwriteSchema", "true").save(silver_path)
+        write_delta_target(silver, silver_path, mode=mode, overwrite_schema=True)
     return silver
 
 
@@ -1675,7 +1695,7 @@ def build_gold_team_match_context(
 ):
     """Builds team-level match context features from Silver fixtures."""
     F, *_ = _require_pyspark()
-    fixtures = spark.read.format("delta").load(silver_fixtures_path)
+    fixtures = read_delta_target(spark, silver_fixtures_path)
     home_rows = fixtures.select(
         "fixture_id",
         "fixture_date_utc",
@@ -1713,7 +1733,7 @@ def build_gold_team_match_context(
         .withColumn("opponent_team_name_normalized", normalized_name_sql("opponent_team_name"))
         .withColumn("updated_at_utc", F.current_timestamp())
     )
-    gold.write.format("delta").mode(mode).option("overwriteSchema", "true").save(gold_path)
+    write_delta_target(gold, gold_path, mode=mode, overwrite_schema=True)
     return gold
 
 
@@ -1732,7 +1752,7 @@ def build_gold_rating_baseline(
         .withColumn("team_name_normalized", normalized_name_sql("team_name"))
         .withColumn("updated_at_utc", F.current_timestamp())
     )
-    baseline.write.format("delta").mode(mode).option("overwriteSchema", "true").save(gold_path)
+    write_delta_target(baseline, gold_path, mode=mode, overwrite_schema=True)
     return baseline
 
 
@@ -1746,8 +1766,8 @@ def build_gold_player_shot_features(
 ):
     """Builds model-ready player shot features from Silver player stats and fixtures."""
     F, *_ = _require_pyspark()
-    players = spark.read.format("delta").load(silver_player_stats_path)
-    fixtures = spark.read.format("delta").load(silver_fixtures_path).select(
+    players = read_delta_target(spark, silver_player_stats_path)
+    fixtures = read_delta_target(spark, silver_fixtures_path).select(
         "fixture_id",
         "fixture_date_utc",
         "league_id",
@@ -1776,7 +1796,7 @@ def build_gold_player_shot_features(
         )
         .withColumn("updated_at_utc", F.current_timestamp())
     )
-    features.write.format("delta").mode(mode).option("overwriteSchema", "true").save(gold_path)
+    write_delta_target(features, gold_path, mode=mode, overwrite_schema=True)
     return features
 
 
@@ -1799,7 +1819,7 @@ def transform_silver_to_gold_sapm(
     F, *_ = _require_pyspark()
     smoothed_shot_rate_udf = build_empirical_bayes_shot_rate_pandas_udf()
 
-    silver = spark.read.format("delta").load(silver_path)
+    silver = read_delta_target(spark, silver_path)
     enriched = silver.withColumn(
         "position_group",
         F.when(F.upper(F.col("games_position")).isin("F", "A", "ATTACKER", "FORWARD", "STRIKER"), F.lit("F"))
@@ -1809,7 +1829,7 @@ def transform_silver_to_gold_sapm(
     )
 
     if position_prior_path:
-        priors = spark.read.format("delta").load(position_prior_path).select(
+        priors = read_delta_target(spark, position_prior_path).select(
             "position_group",
             F.col("alpha").cast("double").alias("prior_alpha"),
             F.col("beta").cast("double").alias("prior_beta"),
@@ -1829,7 +1849,7 @@ def transform_silver_to_gold_sapm(
         )
 
     if fixture_context_path:
-        context = spark.read.format("delta").load(fixture_context_path).select(
+        context = read_delta_target(spark, fixture_context_path).select(
             F.col("fixture_id").cast("int").alias("context_fixture_id"),
             F.col("game_importance_scalar").cast("double"),
             F.col("opponent_strength_adjustment").cast("double"),
@@ -1876,5 +1896,5 @@ def transform_silver_to_gold_sapm(
         )
     )
 
-    gold.write.format("delta").mode(mode).save(gold_path)
+    write_delta_target(gold, gold_path, mode=mode)
     return gold

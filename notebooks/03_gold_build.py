@@ -22,13 +22,28 @@ config = DatabricksPipelineConfig(
     ops_schema=dbutils.widgets.get("ops_schema"),
 )
 
-team_context_df = build_gold_team_match_context(spark)
+team_context_df = build_gold_team_match_context(
+    spark,
+    silver_fixtures_path=table_name(config, "silver", "football_fixtures"),
+    gold_path=table_name(config, "gold", "football_team_match_context"),
+)
 rating_baseline_df = build_gold_rating_baseline(
     spark,
     seed_table=table_name(config, "bronze", "fifa_mens_world_ranking_seed"),
+    gold_path=table_name(config, "gold", "football_rating_baseline"),
 )
-player_features_df = build_gold_player_shot_features(spark)
-gold_df = transform_silver_to_gold_sapm(spark)
+player_features_df = build_gold_player_shot_features(
+    spark,
+    silver_player_stats_path=table_name(config, "silver", "football_player_match_stats"),
+    silver_fixtures_path=table_name(config, "silver", "football_fixtures"),
+    gold_path=table_name(config, "gold", "football_player_shot_features"),
+)
+gold_df = transform_silver_to_gold_sapm(
+    spark,
+    silver_path=table_name(config, "silver", "football_player_match_stats"),
+    fixture_context_path=table_name(config, "gold", "football_team_match_context"),
+    gold_path=table_name(config, "gold", "football_player_sapm"),
+)
 
 display({
     "team_context": team_context_df.count(),

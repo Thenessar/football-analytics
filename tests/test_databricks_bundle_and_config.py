@@ -46,7 +46,7 @@ def test_databricks_table_names_use_layer_schemas():
 def test_bundle_passes_catalog_schema_parameters_to_table_aware_tasks():
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
 
-    for task_name in ("prepare_run", "bronze_ingest", "gold_build"):
+    for task_name in ("prepare_run", "bronze_ingest", "silver_normalize", "gold_build"):
         match = re.search(
             rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
             bundle,
