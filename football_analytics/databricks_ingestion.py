@@ -1,6 +1,9 @@
 import csv
 import json
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +48,7 @@ COMPLETED_FIXTURE_STATUSES = {"FT", "AET", "PEN"}
 FIXTURES_ENDPOINT = "fixtures"
 PLAYER_STATS_ENDPOINT = "fixtures/players"
 LINEUPS_ENDPOINT = "fixtures/lineups"
+DEFAULT_API_RATE_LIMIT_PER_MINUTE = 240
 QUOTA_ERROR_TOKENS = (
     "rate limit",
     "too many request",
@@ -210,6 +214,35 @@ class EndpointIngestionPlan:
     skipped_fixture_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class FixtureEndpointFetchResult:
+    index: int
+    fixture_id: int
+    payload: Optional[Mapping] = None
+    error: Optional[Exception] = None
+
+
+class ApiRateLimiter:
+    """Thread-safe spacing limiter for API calls from the Databricks driver."""
+
+    def __init__(self, calls_per_minute: Optional[int]):
+        self._interval_seconds = 0.0
+        if calls_per_minute and calls_per_minute > 0:
+            self._interval_seconds = 60.0 / float(calls_per_minute)
+        self._lock = threading.Lock()
+        self._next_available_at = 0.0
+
+    def wait(self) -> None:
+        if self._interval_seconds <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_available_at - now)
+            self._next_available_at = max(now, self._next_available_at) + self._interval_seconds
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -244,6 +277,53 @@ def _log_ingestion_event(logger: Optional[logging.Logger], level: int, event: st
     logger.log(level, event, extra={"event": event, **fields})
 
 
+def _endpoint_worker_count(endpoint_max_workers: int, fixture_count: int) -> int:
+    if fixture_count <= 0:
+        return 0
+    try:
+        requested_workers = int(endpoint_max_workers)
+    except (TypeError, ValueError):
+        requested_workers = 1
+    return max(1, min(requested_workers, fixture_count))
+
+
+def _mark_fixture_endpoint_started(
+    spark,
+    *,
+    run_id: str,
+    target_date: Optional[str],
+    endpoint: str,
+    fixture_id: int,
+    index: int,
+    total: int,
+    checkpoint_table: str,
+    logger: Optional[logging.Logger],
+) -> None:
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "fixture_endpoint_started",
+        run_id=run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        endpoint=endpoint,
+        fixture_id=fixture_id,
+        index=index,
+        total=total,
+        status=CHECKPOINT_PENDING,
+    )
+    if _supports_spark_sql(spark):
+        upsert_endpoint_checkpoint(
+            spark,
+            run_id=run_id,
+            target_date=target_date,
+            fixture_id=fixture_id,
+            endpoint=endpoint,
+            status=CHECKPOINT_PENDING,
+            checkpoint_table=checkpoint_table,
+        )
+
+
 def _fetch_payload_with_optional_logger(
     endpoint: str,
     params: Mapping,
@@ -254,6 +334,111 @@ def _fetch_payload_with_optional_logger(
     if logger is None:
         return fetch_football_api_payload(endpoint, params, api_key=api_key)
     return fetch_football_api_payload(endpoint, params, api_key=api_key, logger=logger)
+
+
+def _fetch_fixture_endpoint_result(
+    *,
+    endpoint: str,
+    fixture_id: int,
+    index: int,
+    api_key: Optional[str],
+    logger: Optional[logging.Logger],
+    rate_limiter: ApiRateLimiter,
+) -> FixtureEndpointFetchResult:
+    try:
+        rate_limiter.wait()
+        payload = _fetch_payload_with_optional_logger(
+            endpoint,
+            {"fixture": fixture_id},
+            api_key=api_key,
+            logger=logger,
+        )
+        return FixtureEndpointFetchResult(index=index, fixture_id=fixture_id, payload=payload)
+    except Exception as error:
+        return FixtureEndpointFetchResult(index=index, fixture_id=fixture_id, error=error)
+
+
+def _iter_fixture_endpoint_fetch_results(
+    spark,
+    fixture_ids: Sequence[int],
+    *,
+    endpoint: str,
+    api_key: Optional[str],
+    run_id: str,
+    target_date: Optional[str],
+    checkpoint_table: str,
+    logger: Optional[logging.Logger],
+    endpoint_max_workers: int,
+    api_rate_limit_per_minute: Optional[int],
+) -> Iterable[FixtureEndpointFetchResult]:
+    """Yields endpoint fetch results while keeping Spark writes on the driver."""
+    fixture_id_tuple = tuple(int(fixture_id) for fixture_id in fixture_ids)
+    total = len(fixture_id_tuple)
+    workers = _endpoint_worker_count(endpoint_max_workers, total)
+    if total == 0:
+        return
+
+    rate_limiter = ApiRateLimiter(api_rate_limit_per_minute)
+    if workers == 1:
+        for index, fixture_id in enumerate(fixture_id_tuple, start=1):
+            _mark_fixture_endpoint_started(
+                spark,
+                run_id=run_id,
+                target_date=target_date,
+                endpoint=endpoint,
+                fixture_id=fixture_id,
+                index=index,
+                total=total,
+                checkpoint_table=checkpoint_table,
+                logger=logger,
+            )
+            yield _fetch_fixture_endpoint_result(
+                endpoint=endpoint,
+                fixture_id=fixture_id,
+                index=index,
+                api_key=api_key,
+                logger=logger,
+                rate_limiter=rate_limiter,
+            )
+        return
+
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "endpoint_parallel_fetch_started",
+        run_id=run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        endpoint=endpoint,
+        total=total,
+        endpoint_max_workers=workers,
+        api_rate_limit_per_minute=api_rate_limit_per_minute,
+    )
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bronze-api-fetch") as executor:
+        futures = []
+        for index, fixture_id in enumerate(fixture_id_tuple, start=1):
+            _mark_fixture_endpoint_started(
+                spark,
+                run_id=run_id,
+                target_date=target_date,
+                endpoint=endpoint,
+                fixture_id=fixture_id,
+                index=index,
+                total=total,
+                checkpoint_table=checkpoint_table,
+                logger=logger,
+            )
+            futures.append(executor.submit(
+                _fetch_fixture_endpoint_result,
+                endpoint=endpoint,
+                fixture_id=fixture_id,
+                index=index,
+                api_key=api_key,
+                logger=logger,
+                rate_limiter=rate_limiter,
+            ))
+        for future in as_completed(futures):
+            yield future.result()
 
 
 def split_senior_mens_international_fixtures(
@@ -1000,6 +1185,8 @@ def ingest_player_stats_for_fixtures_to_bronze(
     force_refresh: bool = False,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
     logger: Optional[logging.Logger] = None,
+    endpoint_max_workers: int = 1,
+    api_rate_limit_per_minute: Optional[int] = None,
 ) -> BronzeIngestionSummary:
     """Fetches `/fixtures/players` for explicit fixture IDs and lands Bronze rows."""
     ingested = []
@@ -1054,37 +1241,25 @@ def ingest_player_stats_for_fixtures_to_bronze(
                 status=CHECKPOINT_SKIPPED,
                 checkpoint_table=checkpoint_table,
             )
-    for index, fixture_id in enumerate(plan.fixture_ids_to_fetch, start=1):
+    ingested_by_index = {}
+    for result in _iter_fixture_endpoint_fetch_results(
+        spark,
+        plan.fixture_ids_to_fetch,
+        endpoint=PLAYER_STATS_ENDPOINT,
+        api_key=api_key,
+        run_id=run_id,
+        target_date=target_date,
+        checkpoint_table=checkpoint_table,
+        logger=logger,
+        endpoint_max_workers=endpoint_max_workers,
+        api_rate_limit_per_minute=api_rate_limit_per_minute,
+    ):
+        fixture_id = result.fixture_id
+        index = result.index
         try:
-            _log_ingestion_event(
-                logger,
-                logging.INFO,
-                "fixture_endpoint_started",
-                run_id=run_id,
-                stage="bronze_ingest",
-                target_date=target_date,
-                endpoint=PLAYER_STATS_ENDPOINT,
-                fixture_id=fixture_id,
-                index=index,
-                total=len(plan.fixture_ids_to_fetch),
-                status=CHECKPOINT_PENDING,
-            )
-            if _supports_spark_sql(spark):
-                upsert_endpoint_checkpoint(
-                    spark,
-                    run_id=run_id,
-                    target_date=target_date,
-                    fixture_id=fixture_id,
-                    endpoint=PLAYER_STATS_ENDPOINT,
-                    status=CHECKPOINT_PENDING,
-                    checkpoint_table=checkpoint_table,
-                )
-            payload = _fetch_payload_with_optional_logger(
-                PLAYER_STATS_ENDPOINT,
-                {"fixture": fixture_id},
-                api_key=api_key,
-                logger=logger,
-            )
+            if result.error is not None:
+                raise result.error
+            payload = result.payload or {}
             if _supports_spark_sql(spark):
                 write_bronze_raw_envelopes(
                     spark,
@@ -1118,7 +1293,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
                 total=len(plan.fixture_ids_to_fetch),
                 status=CHECKPOINT_COMPLETED,
             )
-            ingested.append(fixture_id)
+            ingested_by_index[index] = fixture_id
         except Exception as error:
             if _supports_spark_sql(spark):
                 upsert_endpoint_checkpoint(
@@ -1146,6 +1321,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
                 error=_safe_log_error(error),
             )
             failed += 1
+    ingested = [fixture_id for _, fixture_id in sorted(ingested_by_index.items())]
     return BronzeIngestionSummary(
         requested_dates=(),
         discovered_fixtures=len(fixture_id_list),
@@ -1171,6 +1347,8 @@ def ingest_lineups_for_fixtures_to_bronze(
     required_fixture_ids: Optional[Iterable[int]] = None,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
     logger: Optional[logging.Logger] = None,
+    endpoint_max_workers: int = 1,
+    api_rate_limit_per_minute: Optional[int] = None,
 ) -> BronzeIngestionSummary:
     """Fetches `/fixtures/lineups`, treating historical missing lineups as skips."""
     fixture_id_list = [int(fixture_id) for fixture_id in fixture_ids]
@@ -1217,37 +1395,25 @@ def ingest_lineups_for_fixtures_to_bronze(
             total=len(plan.skipped_fixture_ids),
             status=CHECKPOINT_SKIPPED,
         )
-    for index, fixture_id in enumerate(plan.fixture_ids_to_fetch, start=1):
+    ingested_by_index = {}
+    for result in _iter_fixture_endpoint_fetch_results(
+        spark,
+        plan.fixture_ids_to_fetch,
+        endpoint=LINEUPS_ENDPOINT,
+        api_key=api_key,
+        run_id=run_id,
+        target_date=target_date,
+        checkpoint_table=checkpoint_table,
+        logger=logger,
+        endpoint_max_workers=endpoint_max_workers,
+        api_rate_limit_per_minute=api_rate_limit_per_minute,
+    ):
+        fixture_id = result.fixture_id
+        index = result.index
         try:
-            _log_ingestion_event(
-                logger,
-                logging.INFO,
-                "fixture_endpoint_started",
-                run_id=run_id,
-                stage="bronze_ingest",
-                target_date=target_date,
-                endpoint=LINEUPS_ENDPOINT,
-                fixture_id=fixture_id,
-                index=index,
-                total=len(plan.fixture_ids_to_fetch),
-                status=CHECKPOINT_PENDING,
-            )
-            if _supports_spark_sql(spark):
-                upsert_endpoint_checkpoint(
-                    spark,
-                    run_id=run_id,
-                    target_date=target_date,
-                    fixture_id=fixture_id,
-                    endpoint=LINEUPS_ENDPOINT,
-                    status=CHECKPOINT_PENDING,
-                    checkpoint_table=checkpoint_table,
-                )
-            payload = _fetch_payload_with_optional_logger(
-                LINEUPS_ENDPOINT,
-                {"fixture": fixture_id},
-                api_key=api_key,
-                logger=logger,
-            )
+            if result.error is not None:
+                raise result.error
+            payload = result.payload or {}
             response = payload.get("response", []) if isinstance(payload, Mapping) else []
             if not response:
                 skipped.append(fixture_id)
@@ -1314,9 +1480,10 @@ def ingest_lineups_for_fixtures_to_bronze(
                 total=len(plan.fixture_ids_to_fetch),
                 status=CHECKPOINT_COMPLETED,
             )
-            ingested.append(fixture_id)
+            ingested_by_index[index] = fixture_id
         except Exception as error:
             failed += 1
+            status = CHECKPOINT_FAILED if fixture_id in required else CHECKPOINT_SKIPPED
             _log_ingestion_event(
                 logger,
                 logging.WARNING,
@@ -1328,11 +1495,9 @@ def ingest_lineups_for_fixtures_to_bronze(
                 fixture_id=fixture_id,
                 index=index,
                 total=len(plan.fixture_ids_to_fetch),
-                status=CHECKPOINT_FAILED if fixture_id in required else CHECKPOINT_SKIPPED,
+                status=status,
                 error=_safe_log_error(error),
             )
-            if fixture_id in required:
-                raise
             if _supports_spark_sql(spark):
                 upsert_endpoint_checkpoint(
                     spark,
@@ -1340,11 +1505,14 @@ def ingest_lineups_for_fixtures_to_bronze(
                     target_date=target_date,
                     fixture_id=fixture_id,
                     endpoint=LINEUPS_ENDPOINT,
-                    status=CHECKPOINT_SKIPPED,
+                    status=status,
                     last_error=str(error),
                     checkpoint_table=checkpoint_table,
                 )
+            if fixture_id in required:
+                raise
             skipped.append(fixture_id)
+    ingested = [fixture_id for _, fixture_id in sorted(ingested_by_index.items())]
     return BronzeIngestionSummary(
         requested_dates=(),
         discovered_fixtures=len(fixture_id_list),
@@ -1376,6 +1544,8 @@ def ingest_senior_mens_international_bronze(
     bronze_lineups_path: str = BRONZE_LINEUPS_RAW_PATH,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
     logger: Optional[logging.Logger] = None,
+    endpoint_max_workers: int = 1,
+    api_rate_limit_per_minute: Optional[int] = None,
 ) -> BronzeIngestionSummary:
     """Runs Bronze fixture discovery plus eligible player-stat/lineup ingestion."""
     if target_date:
@@ -1431,6 +1601,8 @@ def ingest_senior_mens_international_bronze(
             bronze_path=bronze_player_stats_path,
             checkpoint_table=checkpoint_table,
             logger=logger,
+            endpoint_max_workers=endpoint_max_workers,
+            api_rate_limit_per_minute=api_rate_limit_per_minute,
         )
         player_ingested += player_summary.player_stat_payloads_ingested
         skipped_fixture_count += player_summary.skipped_fixtures
@@ -1448,6 +1620,8 @@ def ingest_senior_mens_international_bronze(
                 bronze_path=bronze_lineups_path,
                 checkpoint_table=checkpoint_table,
                 logger=logger,
+                endpoint_max_workers=endpoint_max_workers,
+                api_rate_limit_per_minute=api_rate_limit_per_minute,
             )
             lineups_ingested += lineup_summary.lineups_ingested
             lineups_skipped += lineup_summary.lineups_skipped
