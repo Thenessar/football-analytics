@@ -1,5 +1,6 @@
 import csv
 import json
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -231,6 +232,28 @@ def endpoint_ingestion_plan(
 
 def _supports_spark_sql(spark) -> bool:
     return spark is not None and hasattr(spark, "sql") and hasattr(spark, "createDataFrame")
+
+
+def _safe_log_error(error: Exception) -> str:
+    return " ".join(str(error).split())[:500]
+
+
+def _log_ingestion_event(logger: Optional[logging.Logger], level: int, event: str, **fields) -> None:
+    if logger is None:
+        return
+    logger.log(level, event, extra={"event": event, **fields})
+
+
+def _fetch_payload_with_optional_logger(
+    endpoint: str,
+    params: Mapping,
+    *,
+    api_key: Optional[str] = None,
+    logger: Optional[logging.Logger] = None,
+) -> Mapping:
+    if logger is None:
+        return fetch_football_api_payload(endpoint, params, api_key=api_key)
+    return fetch_football_api_payload(endpoint, params, api_key=api_key, logger=logger)
 
 
 def split_senior_mens_international_fixtures(
@@ -704,12 +727,14 @@ def fetch_football_api_payload(
     *,
     api_key: Optional[str] = None,
     base_url: str = BASE_URL,
+    logger: Optional[logging.Logger] = None,
 ) -> Mapping:
     """Fetches one complete Football-API response envelope for Bronze landing."""
     client = FootballApiClient(
         api_key=api_key,
         base_url=base_url,
         request_get=requests.get,
+        logger=logger,
     )
     try:
         return client.get(endpoint, params)
@@ -856,9 +881,20 @@ def discover_senior_mens_fixtures_for_date(
     bronze_fixtures_path: str = BRONZE_FIXTURES_RAW_PATH,
     bronze_eligibility_path: str = BRONZE_FIXTURES_ELIGIBILITY_PATH,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    logger: Optional[logging.Logger] = None,
 ) -> FixtureDiscoveryResult:
     """Calls `/fixtures` once for a date, lands Bronze, and filters eligibility."""
     request_params = {"date": match_date, "timezone": "UTC"}
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "fixture_discovery_started",
+        run_id=run_id,
+        stage="fixture_discovery",
+        target_date=match_date,
+        endpoint=FIXTURES_ENDPOINT,
+        status=CHECKPOINT_PENDING,
+    )
     upsert_endpoint_checkpoint(
         spark,
         run_id=run_id,
@@ -870,10 +906,11 @@ def discover_senior_mens_fixtures_for_date(
         checkpoint_table=checkpoint_table,
     )
     try:
-        payload = fetch_football_api_payload(
+        payload = _fetch_payload_with_optional_logger(
             FIXTURES_ENDPOINT,
             request_params,
             api_key=api_key,
+            logger=logger,
         )
         write_fixtures_bronze(
             spark,
@@ -912,6 +949,19 @@ def discover_senior_mens_fixtures_for_date(
             response_hash=payload_hash(payload),
             checkpoint_table=checkpoint_table,
         )
+        _log_ingestion_event(
+            logger,
+            logging.INFO,
+            "fixture_discovery_completed",
+            run_id=run_id,
+            stage="fixture_discovery",
+            target_date=match_date,
+            endpoint=FIXTURES_ENDPOINT,
+            status=CHECKPOINT_COMPLETED,
+            discovered_fixtures=len(payload.get("response", [])),
+            eligible_fixtures=len(eligible),
+            skipped_fixtures=len(skipped),
+        )
         return FixtureDiscoveryResult(match_date, payload, eligible, skipped)
     except Exception as error:
         upsert_endpoint_checkpoint(
@@ -923,6 +973,17 @@ def discover_senior_mens_fixtures_for_date(
             status=CHECKPOINT_FAILED,
             last_error=str(error),
             checkpoint_table=checkpoint_table,
+        )
+        _log_ingestion_event(
+            logger,
+            logging.WARNING,
+            "fixture_endpoint_failed",
+            run_id=run_id,
+            stage="fixture_discovery",
+            target_date=match_date,
+            endpoint=FIXTURES_ENDPOINT,
+            status=CHECKPOINT_FAILED,
+            error=_safe_log_error(error),
         )
         raise
 
@@ -938,6 +999,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
     completed_fixture_ids: Optional[Iterable[int]] = None,
     force_refresh: bool = False,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    logger: Optional[logging.Logger] = None,
 ) -> BronzeIngestionSummary:
     """Fetches `/fixtures/players` for explicit fixture IDs and lands Bronze rows."""
     ingested = []
@@ -956,7 +1018,32 @@ def ingest_player_stats_for_fixtures_to_bronze(
         completed_fixture_ids=completed_ids,
         force_refresh=force_refresh,
     )
-    for fixture_id in plan.skipped_fixture_ids:
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "endpoint_plan_created",
+        run_id=run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        endpoint=PLAYER_STATS_ENDPOINT,
+        total=len(fixture_id_list),
+        skipped_fixtures=len(plan.skipped_fixture_ids),
+        fixtures_to_fetch=len(plan.fixture_ids_to_fetch),
+    )
+    for index, fixture_id in enumerate(plan.skipped_fixture_ids, start=1):
+        _log_ingestion_event(
+            logger,
+            logging.INFO,
+            "fixture_endpoint_skipped",
+            run_id=run_id,
+            stage="bronze_ingest",
+            target_date=target_date,
+            endpoint=PLAYER_STATS_ENDPOINT,
+            fixture_id=fixture_id,
+            index=index,
+            total=len(plan.skipped_fixture_ids),
+            status=CHECKPOINT_SKIPPED,
+        )
         if _supports_spark_sql(spark):
             upsert_endpoint_checkpoint(
                 spark,
@@ -967,12 +1054,36 @@ def ingest_player_stats_for_fixtures_to_bronze(
                 status=CHECKPOINT_SKIPPED,
                 checkpoint_table=checkpoint_table,
             )
-    for fixture_id in plan.fixture_ids_to_fetch:
+    for index, fixture_id in enumerate(plan.fixture_ids_to_fetch, start=1):
         try:
-            payload = fetch_football_api_payload(
+            _log_ingestion_event(
+                logger,
+                logging.INFO,
+                "fixture_endpoint_started",
+                run_id=run_id,
+                stage="bronze_ingest",
+                target_date=target_date,
+                endpoint=PLAYER_STATS_ENDPOINT,
+                fixture_id=fixture_id,
+                index=index,
+                total=len(plan.fixture_ids_to_fetch),
+                status=CHECKPOINT_PENDING,
+            )
+            if _supports_spark_sql(spark):
+                upsert_endpoint_checkpoint(
+                    spark,
+                    run_id=run_id,
+                    target_date=target_date,
+                    fixture_id=fixture_id,
+                    endpoint=PLAYER_STATS_ENDPOINT,
+                    status=CHECKPOINT_PENDING,
+                    checkpoint_table=checkpoint_table,
+                )
+            payload = _fetch_payload_with_optional_logger(
                 PLAYER_STATS_ENDPOINT,
                 {"fixture": fixture_id},
                 api_key=api_key,
+                logger=logger,
             )
             if _supports_spark_sql(spark):
                 write_bronze_raw_envelopes(
@@ -994,6 +1105,19 @@ def ingest_player_stats_for_fixtures_to_bronze(
                     response_hash=payload_hash(payload),
                     checkpoint_table=checkpoint_table,
                 )
+            _log_ingestion_event(
+                logger,
+                logging.INFO,
+                "fixture_endpoint_completed",
+                run_id=run_id,
+                stage="bronze_ingest",
+                target_date=target_date,
+                endpoint=PLAYER_STATS_ENDPOINT,
+                fixture_id=fixture_id,
+                index=index,
+                total=len(plan.fixture_ids_to_fetch),
+                status=CHECKPOINT_COMPLETED,
+            )
             ingested.append(fixture_id)
         except Exception as error:
             if _supports_spark_sql(spark):
@@ -1007,6 +1131,20 @@ def ingest_player_stats_for_fixtures_to_bronze(
                     last_error=str(error),
                     checkpoint_table=checkpoint_table,
                 )
+            _log_ingestion_event(
+                logger,
+                logging.WARNING,
+                "fixture_endpoint_failed",
+                run_id=run_id,
+                stage="bronze_ingest",
+                target_date=target_date,
+                endpoint=PLAYER_STATS_ENDPOINT,
+                fixture_id=fixture_id,
+                index=index,
+                total=len(plan.fixture_ids_to_fetch),
+                status=CHECKPOINT_FAILED,
+                error=_safe_log_error(error),
+            )
             failed += 1
     return BronzeIngestionSummary(
         requested_dates=(),
@@ -1032,6 +1170,7 @@ def ingest_lineups_for_fixtures_to_bronze(
     force_refresh: bool = False,
     required_fixture_ids: Optional[Iterable[int]] = None,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    logger: Optional[logging.Logger] = None,
 ) -> BronzeIngestionSummary:
     """Fetches `/fixtures/lineups`, treating historical missing lineups as skips."""
     fixture_id_list = [int(fixture_id) for fixture_id in fixture_ids]
@@ -1049,15 +1188,65 @@ def ingest_lineups_for_fixtures_to_bronze(
         completed_fixture_ids=completed_ids,
         force_refresh=force_refresh,
     )
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "endpoint_plan_created",
+        run_id=run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        endpoint=LINEUPS_ENDPOINT,
+        total=len(fixture_id_list),
+        skipped_fixtures=len(plan.skipped_fixture_ids),
+        fixtures_to_fetch=len(plan.fixture_ids_to_fetch),
+    )
     ingested = []
     skipped = list(plan.skipped_fixture_ids)
     failed = 0
-    for fixture_id in plan.fixture_ids_to_fetch:
+    for index, fixture_id in enumerate(plan.skipped_fixture_ids, start=1):
+        _log_ingestion_event(
+            logger,
+            logging.INFO,
+            "fixture_endpoint_skipped",
+            run_id=run_id,
+            stage="bronze_ingest",
+            target_date=target_date,
+            endpoint=LINEUPS_ENDPOINT,
+            fixture_id=fixture_id,
+            index=index,
+            total=len(plan.skipped_fixture_ids),
+            status=CHECKPOINT_SKIPPED,
+        )
+    for index, fixture_id in enumerate(plan.fixture_ids_to_fetch, start=1):
         try:
-            payload = fetch_football_api_payload(
+            _log_ingestion_event(
+                logger,
+                logging.INFO,
+                "fixture_endpoint_started",
+                run_id=run_id,
+                stage="bronze_ingest",
+                target_date=target_date,
+                endpoint=LINEUPS_ENDPOINT,
+                fixture_id=fixture_id,
+                index=index,
+                total=len(plan.fixture_ids_to_fetch),
+                status=CHECKPOINT_PENDING,
+            )
+            if _supports_spark_sql(spark):
+                upsert_endpoint_checkpoint(
+                    spark,
+                    run_id=run_id,
+                    target_date=target_date,
+                    fixture_id=fixture_id,
+                    endpoint=LINEUPS_ENDPOINT,
+                    status=CHECKPOINT_PENDING,
+                    checkpoint_table=checkpoint_table,
+                )
+            payload = _fetch_payload_with_optional_logger(
                 LINEUPS_ENDPOINT,
                 {"fixture": fixture_id},
                 api_key=api_key,
+                logger=logger,
             )
             response = payload.get("response", []) if isinstance(payload, Mapping) else []
             if not response:
@@ -1080,6 +1269,19 @@ def ingest_lineups_for_fixtures_to_bronze(
                         response_hash=payload_hash(payload),
                         checkpoint_table=checkpoint_table,
                     )
+                _log_ingestion_event(
+                    logger,
+                    logging.INFO,
+                    "fixture_endpoint_skipped",
+                    run_id=run_id,
+                    stage="bronze_ingest",
+                    target_date=target_date,
+                    endpoint=LINEUPS_ENDPOINT,
+                    fixture_id=fixture_id,
+                    index=index,
+                    total=len(plan.fixture_ids_to_fetch),
+                    status=CHECKPOINT_SKIPPED,
+                )
                 continue
             if _supports_spark_sql(spark):
                 write_lineups_bronze(
@@ -1099,9 +1301,36 @@ def ingest_lineups_for_fixtures_to_bronze(
                     response_hash=payload_hash(payload),
                     checkpoint_table=checkpoint_table,
                 )
+            _log_ingestion_event(
+                logger,
+                logging.INFO,
+                "fixture_endpoint_completed",
+                run_id=run_id,
+                stage="bronze_ingest",
+                target_date=target_date,
+                endpoint=LINEUPS_ENDPOINT,
+                fixture_id=fixture_id,
+                index=index,
+                total=len(plan.fixture_ids_to_fetch),
+                status=CHECKPOINT_COMPLETED,
+            )
             ingested.append(fixture_id)
         except Exception as error:
             failed += 1
+            _log_ingestion_event(
+                logger,
+                logging.WARNING,
+                "fixture_endpoint_failed",
+                run_id=run_id,
+                stage="bronze_ingest",
+                target_date=target_date,
+                endpoint=LINEUPS_ENDPOINT,
+                fixture_id=fixture_id,
+                index=index,
+                total=len(plan.fixture_ids_to_fetch),
+                status=CHECKPOINT_FAILED if fixture_id in required else CHECKPOINT_SKIPPED,
+                error=_safe_log_error(error),
+            )
             if fixture_id in required:
                 raise
             if _supports_spark_sql(spark):
@@ -1146,6 +1375,7 @@ def ingest_senior_mens_international_bronze(
     bronze_player_stats_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
     bronze_lineups_path: str = BRONZE_LINEUPS_RAW_PATH,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    logger: Optional[logging.Logger] = None,
 ) -> BronzeIngestionSummary:
     """Runs Bronze fixture discovery plus eligible player-stat/lineup ingestion."""
     if target_date:
@@ -1156,6 +1386,16 @@ def ingest_senior_mens_international_bronze(
         raise ValueError("Provide target_date or both date_from and date_to")
 
     active_run_id = run_id or f"intl-{utc_now_iso()}"
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "bronze_ingest_started",
+        run_id=active_run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        total=len(dates),
+        status=CHECKPOINT_PENDING,
+    )
     all_fixture_ids = []
     discovered_count = 0
     skipped_fixture_count = 0
@@ -1174,6 +1414,7 @@ def ingest_senior_mens_international_bronze(
             bronze_fixtures_path=bronze_fixtures_path,
             bronze_eligibility_path=bronze_eligibility_path,
             checkpoint_table=checkpoint_table,
+            logger=logger,
         )
         discovered_count += len(discovery.raw_payload.get("response", []))
         skipped_fixture_count += len(discovery.skipped_fixtures)
@@ -1189,6 +1430,7 @@ def ingest_senior_mens_international_bronze(
             force_refresh=force_refresh,
             bronze_path=bronze_player_stats_path,
             checkpoint_table=checkpoint_table,
+            logger=logger,
         )
         player_ingested += player_summary.player_stat_payloads_ingested
         skipped_fixture_count += player_summary.skipped_fixtures
@@ -1205,12 +1447,13 @@ def ingest_senior_mens_international_bronze(
                 required_fixture_ids=required_fixture_ids,
                 bronze_path=bronze_lineups_path,
                 checkpoint_table=checkpoint_table,
+                logger=logger,
             )
             lineups_ingested += lineup_summary.lineups_ingested
             lineups_skipped += lineup_summary.lineups_skipped
             failures += lineup_summary.failed_fixtures
 
-    return BronzeIngestionSummary(
+    summary = BronzeIngestionSummary(
         requested_dates=tuple(dates),
         discovered_fixtures=discovered_count,
         eligible_fixtures=len(all_fixture_ids),
@@ -1222,6 +1465,21 @@ def ingest_senior_mens_international_bronze(
         lineups_ingested=lineups_ingested,
         lineups_skipped=lineups_skipped,
     )
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "bronze_ingest_completed",
+        run_id=active_run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        total=len(dates),
+        status=CHECKPOINT_COMPLETED,
+        discovered_fixtures=summary.discovered_fixtures,
+        eligible_fixtures=summary.eligible_fixtures,
+        skipped_fixtures=summary.skipped_fixtures,
+        failed_fixtures=summary.failed_fixtures,
+    )
+    return summary
 
 
 def ingest_senior_mens_international_player_stats_bronze(
