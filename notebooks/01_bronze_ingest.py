@@ -1,10 +1,14 @@
 # Databricks notebook source
+import logging
+
 from football_analytics.databricks.config import DatabricksPipelineConfig, load_config_from_env
+from football_analytics.databricks.logging import configure_json_logging
 from football_analytics.databricks.tables import table_name
 from football_analytics.databricks_ingestion import (
     ingest_fixture_player_stats_to_delta,
     ingest_senior_mens_international_bronze,
     transform_bronze_to_silver,
+    utc_now_iso,
 )
 
 dbutils.widgets.text("fixture_id", "")
@@ -33,10 +37,11 @@ fixture_id = dbutils.widgets.get("fixture_id").strip()
 target_date = dbutils.widgets.get("target_date").strip()
 date_from = dbutils.widgets.get("date_from").strip()
 date_to = dbutils.widgets.get("date_to").strip()
-run_id = dbutils.widgets.get("run_id").strip() or None
+run_id = dbutils.widgets.get("run_id").strip() or f"intl-{utc_now_iso()}"
 force_refresh = dbutils.widgets.get("force_refresh").strip().lower() == "true"
 include_lineups = dbutils.widgets.get("include_lineups").strip().lower() == "true"
 api_key = config.api_key or dbutils.secrets.get("football-api", "api-football-key")
+logger = configure_json_logging(level=logging.INFO, logger_name="football_analytics.bronze_ingest")
 
 if fixture_id:
     silver_df = ingest_fixture_player_stats_to_delta(
@@ -62,12 +67,21 @@ else:
         bronze_player_stats_path=table_name(config, "bronze", "football_match_raw"),
         bronze_lineups_path=table_name(config, "bronze", "football_lineups_raw"),
         checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+        logger=logger,
     )
     display(summary.as_dict())
+    logger.info(
+        "bronze_to_silver_started",
+        extra={"event": "bronze_to_silver_started", "run_id": run_id, "stage": "bronze_to_silver"},
+    )
     silver_df = transform_bronze_to_silver(
         spark,
         bronze_path=table_name(config, "bronze", "football_match_raw"),
         silver_path=table_name(config, "silver", "football_player_match_stats"),
+    )
+    logger.info(
+        "bronze_to_silver_completed",
+        extra={"event": "bronze_to_silver_completed", "run_id": run_id, "stage": "bronze_to_silver"},
     )
 
 display(silver_df.limit(20))

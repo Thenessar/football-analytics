@@ -243,6 +243,60 @@ def test_player_stats_force_refresh_refetches_completed_fixture_ids(monkeypatch)
     assert called_fixture_ids == [10, 11]
 
 
+def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
+    log_records = []
+    checkpoint_records = []
+
+    class FakeLogger:
+        def log(self, level, message, extra=None):
+            log_records.append((level, message, extra or {}))
+
+    def fake_fetch(endpoint, params, *, api_key=None, logger=None):
+        if params["fixture"] == 12:
+            raise RuntimeError("temporary failure\nwithout payload")
+        return {"response": [{"team": {"id": 1}, "players": []}]}
+
+    def fake_upsert(spark, **kwargs):
+        checkpoint_records.append((kwargs["fixture_id"], kwargs["endpoint"], kwargs["status"]))
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", fake_upsert)
+    monkeypatch.setattr(ingestion, "write_bronze_raw_envelopes", lambda *args, **kwargs: None)
+
+    summary = ingestion.ingest_player_stats_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10, 11, 12],
+        completed_fixture_ids=[10],
+        target_date="2026-06-25",
+        run_id="run-1",
+        logger=FakeLogger(),
+    )
+
+    events = [record[1] for record in log_records]
+    plan = next(record[2] for record in log_records if record[1] == "endpoint_plan_created")
+    failed = next(record[2] for record in log_records if record[1] == "fixture_endpoint_failed")
+
+    assert plan["endpoint"] == ingestion.PLAYER_STATS_ENDPOINT
+    assert plan["total"] == 3
+    assert plan["skipped_fixtures"] == 1
+    assert plan["fixtures_to_fetch"] == 2
+    assert "fixture_endpoint_skipped" in events
+    assert "fixture_endpoint_started" in events
+    assert "fixture_endpoint_completed" in events
+    assert failed["fixture_id"] == 12
+    assert failed["error"] == "temporary failure without payload"
+    assert checkpoint_records == [
+        (10, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_SKIPPED),
+        (11, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_PENDING),
+        (11, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_COMPLETED),
+        (12, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_PENDING),
+        (12, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_FAILED),
+    ]
+    assert summary.player_stat_payloads_ingested == 1
+    assert summary.failed_fixtures == 1
+
+
 def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypatch):
     discovery = ingestion.FixtureDiscoveryResult(
         target_date="2026-06-25",
@@ -298,6 +352,34 @@ def test_lineup_empty_response_is_skipped_not_failed(monkeypatch):
     assert summary.lineups_ingested == 0
     assert summary.lineups_skipped == 1
     assert summary.failed_fixtures == 0
+
+
+def test_lineups_write_pending_checkpoint_before_fetch(monkeypatch):
+    operations = []
+
+    def fake_fetch(endpoint, params, *, api_key=None, logger=None):
+        operations.append(("fetch", params["fixture"]))
+        return {"response": [{"team": {"id": 1}, "formation": "4-3-3"}]}
+
+    def fake_upsert(spark, **kwargs):
+        operations.append(("checkpoint", kwargs["fixture_id"], kwargs["status"]))
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", fake_upsert)
+    monkeypatch.setattr(ingestion, "write_lineups_bronze", lambda *args, **kwargs: None)
+
+    ingestion.ingest_lineups_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[1489437],
+        completed_fixture_ids=[],
+    )
+
+    assert operations[:2] == [
+        ("checkpoint", 1489437, ingestion.CHECKPOINT_PENDING),
+        ("fetch", 1489437),
+    ]
+    assert operations[-1] == ("checkpoint", 1489437, ingestion.CHECKPOINT_COMPLETED)
 
 
 def test_delta_merge_sql_uses_natural_key_predicate_and_updates_non_keys():
