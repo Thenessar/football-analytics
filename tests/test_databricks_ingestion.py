@@ -261,9 +261,14 @@ def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
     def fake_upsert(spark, **kwargs):
         checkpoint_records.append((kwargs["fixture_id"], kwargs["endpoint"], kwargs["status"]))
 
+    def fake_batch_upsert(spark, checkpoint_rows, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE):
+        for row in checkpoint_rows:
+            checkpoint_records.append((row["fixture_id"], row["endpoint"], row["status"]))
+
     monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
     monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
     monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", fake_upsert)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", fake_batch_upsert)
     monkeypatch.setattr(ingestion, "write_bronze_raw_envelopes", lambda *args, **kwargs: None)
 
     summary = ingestion.ingest_player_stats_for_fixtures_to_bronze(
@@ -291,8 +296,8 @@ def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
     assert checkpoint_records == [
         (10, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_SKIPPED),
         (11, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_PENDING),
-        (11, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_COMPLETED),
         (12, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_PENDING),
+        (11, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_COMPLETED),
         (12, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_FAILED),
     ]
     assert summary.player_stat_payloads_ingested == 1
@@ -326,6 +331,34 @@ def test_player_stats_parallel_fetches_with_configured_workers(monkeypatch):
     assert peak_fetches > 1
     assert summary.fixture_ids == (10, 11, 12, 13)
     assert summary.player_stat_payloads_ingested == 4
+
+
+def test_parallel_fetch_batches_pending_checkpoints(monkeypatch):
+    batch_sizes = []
+
+    def fake_batch_upsert(spark, checkpoint_rows, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE):
+        rows = list(checkpoint_rows)
+        batch_sizes.append(len(rows))
+        assert {row["status"] for row in rows} == {ingestion.CHECKPOINT_PENDING}
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", fake_batch_upsert)
+    monkeypatch.setattr(
+        ingestion,
+        "_fetch_payload_with_optional_logger",
+        lambda endpoint, params, *, api_key=None, logger=None: {"response": []},
+    )
+    monkeypatch.setattr(ingestion, "write_bronze_raw_envelopes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", lambda *args, **kwargs: None)
+
+    ingestion.ingest_player_stats_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10, 11, 12, 13],
+        completed_fixture_ids=[],
+        endpoint_max_workers=4,
+    )
+
+    assert batch_sizes == [4]
 
 
 def test_api_rate_limiter_spaces_parallel_requests(monkeypatch):
@@ -420,9 +453,14 @@ def test_lineups_write_pending_checkpoint_before_fetch(monkeypatch):
     def fake_upsert(spark, **kwargs):
         operations.append(("checkpoint", kwargs["fixture_id"], kwargs["status"]))
 
+    def fake_batch_upsert(spark, checkpoint_rows, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE):
+        for row in checkpoint_rows:
+            operations.append(("checkpoint", row["fixture_id"], row["status"]))
+
     monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
     monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
     monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", fake_upsert)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", fake_batch_upsert)
     monkeypatch.setattr(ingestion, "write_lineups_bronze", lambda *args, **kwargs: None)
 
     ingestion.ingest_lineups_for_fixtures_to_bronze(
