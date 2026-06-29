@@ -34,6 +34,10 @@ resources:
           default: "false"
         - name: include_lineups
           default: "true"
+        - name: endpoint_max_workers
+          default: ${var.endpoint_max_workers}
+        - name: api_rate_limit_per_minute
+          default: ${var.api_rate_limit_per_minute}
         - name: load_rankings_seed
           default: "true"
 
@@ -74,6 +78,8 @@ resources:
               ops_schema: "{{job.parameters.ops_schema}}"
               force_refresh: "{{job.parameters.force_refresh}}"
               include_lineups: "{{job.parameters.include_lineups}}"
+              endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
+              api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
 
         - task_key: silver_normalize
           depends_on:

@@ -1,4 +1,6 @@
 import pytest
+import threading
+import time
 
 from football_analytics import databricks_ingestion as ingestion
 
@@ -295,6 +297,60 @@ def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
     ]
     assert summary.player_stat_payloads_ingested == 1
     assert summary.failed_fixtures == 1
+
+
+def test_player_stats_parallel_fetches_with_configured_workers(monkeypatch):
+    active_fetches = 0
+    peak_fetches = 0
+    lock = threading.Lock()
+
+    def fake_fetch(endpoint, params, *, api_key=None, logger=None):
+        nonlocal active_fetches, peak_fetches
+        with lock:
+            active_fetches += 1
+            peak_fetches = max(peak_fetches, active_fetches)
+        time.sleep(0.02)
+        with lock:
+            active_fetches -= 1
+        return {"response": [{"team": {"id": params["fixture"]}, "players": []}]}
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: False)
+    monkeypatch.setattr(ingestion, "_fetch_payload_with_optional_logger", fake_fetch)
+
+    summary = ingestion.ingest_player_stats_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10, 11, 12, 13],
+        endpoint_max_workers=4,
+    )
+
+    assert peak_fetches > 1
+    assert summary.fixture_ids == (10, 11, 12, 13)
+    assert summary.player_stat_payloads_ingested == 4
+
+
+def test_api_rate_limiter_spaces_parallel_requests(monkeypatch):
+    class FakeClock:
+        def __init__(self):
+            self.current = 0.0
+            self.sleeps = []
+
+        def monotonic(self):
+            return self.current
+
+        def sleep(self, delay_seconds):
+            self.sleeps.append(delay_seconds)
+            self.current += delay_seconds
+
+    clock = FakeClock()
+    monkeypatch.setattr(ingestion.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(ingestion.time, "sleep", clock.sleep)
+    limiter = ingestion.ApiRateLimiter(calls_per_minute=6000)
+
+    limiter.wait()
+    limiter.wait()
+    limiter.wait()
+
+    assert clock.sleeps == [0.01, 0.01]
 
 
 def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypatch):

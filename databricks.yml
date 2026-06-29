@@ -31,6 +31,12 @@ variables:
   schedule_pause_status:
     description: Use PAUSED for dev and UNPAUSED when production scheduling is ready.
     default: PAUSED
+  endpoint_max_workers:
+    description: Concurrent driver-side endpoint fetch workers for Bronze ingestion.
+    default: "8"
+  api_rate_limit_per_minute:
+    description: Driver-side API call spacing limit for Bronze ingestion; keep at or below the provider cap.
+    default: "240"
 
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
