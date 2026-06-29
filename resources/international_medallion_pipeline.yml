@@ -107,3 +107,9 @@ resources:
           existing_cluster_id: ${var.cluster_id}
           notebook_task:
             notebook_path: ../notebooks/04_quality_checks.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+              ops_schema: "{{job.parameters.ops_schema}}"
