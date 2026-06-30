@@ -54,6 +54,7 @@ dbt build
 `00_prepare_run.py` creates the target schemas and can still materialize the legacy Python seed table. `01_bronze_ingest.py` only lands raw API-Football payloads and checkpoint state in Bronze/Ops. Silver staging models and Gold mart models live under `dbt/models`.
 
 The bundled workflow is configured for Free Edition/serverless-style execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment.
+The dbt task environment defaults to serverless environment version `4`; override `serverless_environment_version` if your workspace requires a different supported version.
 
 Historical backfills use these widgets:
 

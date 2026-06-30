@@ -34,6 +34,9 @@ variables:
   serverless_performance_target:
     description: Serverless workflow performance mode.
     default: STANDARD
+  serverless_environment_version:
+    description: Serverless Python environment version for dbt job tasks.
+    default: "4"
   endpoint_max_workers:
     description: Concurrent driver-side endpoint fetch workers for Bronze ingestion.
     default: "8"
