@@ -277,6 +277,21 @@ def _log_ingestion_event(logger: Optional[logging.Logger], level: int, event: st
     logger.log(level, event, extra={"event": event, **fields})
 
 
+def _date_scope_log_fields(dates: Sequence[str]) -> dict[str, object]:
+    if len(dates) == 1:
+        return {
+            "date_scope": "single_day",
+            "target_date": dates[0],
+            "requested_dates_count": 1,
+        }
+    return {
+        "date_scope": "date_range",
+        "date_from": dates[0],
+        "date_to": dates[-1],
+        "requested_dates_count": len(dates),
+    }
+
+
 def _endpoint_worker_count(endpoint_max_workers: int, fixture_count: int) -> int:
     if fixture_count <= 0:
         return 0
@@ -288,7 +303,6 @@ def _endpoint_worker_count(endpoint_max_workers: int, fixture_count: int) -> int
 
 
 def _mark_fixture_endpoint_started(
-    spark,
     *,
     run_id: str,
     target_date: Optional[str],
@@ -296,7 +310,6 @@ def _mark_fixture_endpoint_started(
     fixture_id: int,
     index: int,
     total: int,
-    checkpoint_table: str,
     logger: Optional[logging.Logger],
 ) -> None:
     _log_ingestion_event(
@@ -312,14 +325,42 @@ def _mark_fixture_endpoint_started(
         total=total,
         status=CHECKPOINT_PENDING,
     )
-    if _supports_spark_sql(spark):
-        upsert_endpoint_checkpoint(
-            spark,
+
+
+def _mark_fixture_endpoints_pending(
+    spark,
+    fixture_ids: Sequence[int],
+    *,
+    run_id: str,
+    target_date: Optional[str],
+    endpoint: str,
+    checkpoint_table: str,
+    logger: Optional[logging.Logger],
+) -> None:
+    total = len(fixture_ids)
+    for index, fixture_id in enumerate(fixture_ids, start=1):
+        _mark_fixture_endpoint_started(
             run_id=run_id,
             target_date=target_date,
-            fixture_id=fixture_id,
             endpoint=endpoint,
-            status=CHECKPOINT_PENDING,
+            fixture_id=fixture_id,
+            index=index,
+            total=total,
+            logger=logger,
+        )
+    if _supports_spark_sql(spark):
+        upsert_endpoint_checkpoints(
+            spark,
+            [
+                {
+                    "run_id": run_id,
+                    "target_date": target_date,
+                    "fixture_id": fixture_id,
+                    "endpoint": endpoint,
+                    "status": CHECKPOINT_PENDING,
+                }
+                for fixture_id in fixture_ids
+            ],
             checkpoint_table=checkpoint_table,
         )
 
@@ -378,21 +419,22 @@ def _iter_fixture_endpoint_fetch_results(
     if total == 0:
         return
 
+    started_at = time.monotonic()
+    successful_fetches = 0
+    failed_fetches = 0
     rate_limiter = ApiRateLimiter(api_rate_limit_per_minute)
     if workers == 1:
+        _mark_fixture_endpoints_pending(
+            spark,
+            fixture_id_tuple,
+            run_id=run_id,
+            target_date=target_date,
+            endpoint=endpoint,
+            checkpoint_table=checkpoint_table,
+            logger=logger,
+        )
         for index, fixture_id in enumerate(fixture_id_tuple, start=1):
-            _mark_fixture_endpoint_started(
-                spark,
-                run_id=run_id,
-                target_date=target_date,
-                endpoint=endpoint,
-                fixture_id=fixture_id,
-                index=index,
-                total=total,
-                checkpoint_table=checkpoint_table,
-                logger=logger,
-            )
-            yield _fetch_fixture_endpoint_result(
+            result = _fetch_fixture_endpoint_result(
                 endpoint=endpoint,
                 fixture_id=fixture_id,
                 index=index,
@@ -400,6 +442,28 @@ def _iter_fixture_endpoint_fetch_results(
                 logger=logger,
                 rate_limiter=rate_limiter,
             )
+            if result.error is None:
+                successful_fetches += 1
+            else:
+                failed_fetches += 1
+            yield result
+        duration_seconds = max(time.monotonic() - started_at, 0.0)
+        _log_ingestion_event(
+            logger,
+            logging.INFO,
+            "endpoint_fetch_batch_completed",
+            run_id=run_id,
+            stage="bronze_ingest",
+            target_date=target_date,
+            endpoint=endpoint,
+            total=total,
+            successful_fetches=successful_fetches,
+            failed_fetches=failed_fetches,
+            duration_seconds=round(duration_seconds, 3),
+            actual_fetches_per_minute=round((total / duration_seconds) * 60, 2) if duration_seconds > 0 else None,
+            endpoint_max_workers=workers,
+            api_rate_limit_per_minute=api_rate_limit_per_minute,
+        )
         return
 
     _log_ingestion_event(
@@ -415,19 +479,17 @@ def _iter_fixture_endpoint_fetch_results(
         api_rate_limit_per_minute=api_rate_limit_per_minute,
     )
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bronze-api-fetch") as executor:
+        _mark_fixture_endpoints_pending(
+            spark,
+            fixture_id_tuple,
+            run_id=run_id,
+            target_date=target_date,
+            endpoint=endpoint,
+            checkpoint_table=checkpoint_table,
+            logger=logger,
+        )
         futures = []
         for index, fixture_id in enumerate(fixture_id_tuple, start=1):
-            _mark_fixture_endpoint_started(
-                spark,
-                run_id=run_id,
-                target_date=target_date,
-                endpoint=endpoint,
-                fixture_id=fixture_id,
-                index=index,
-                total=total,
-                checkpoint_table=checkpoint_table,
-                logger=logger,
-            )
             futures.append(executor.submit(
                 _fetch_fixture_endpoint_result,
                 endpoint=endpoint,
@@ -438,7 +500,29 @@ def _iter_fixture_endpoint_fetch_results(
                 rate_limiter=rate_limiter,
             ))
         for future in as_completed(futures):
-            yield future.result()
+            result = future.result()
+            if result.error is None:
+                successful_fetches += 1
+            else:
+                failed_fetches += 1
+            yield result
+    duration_seconds = max(time.monotonic() - started_at, 0.0)
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "endpoint_fetch_batch_completed",
+        run_id=run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        endpoint=endpoint,
+        total=total,
+        successful_fetches=successful_fetches,
+        failed_fetches=failed_fetches,
+        duration_seconds=round(duration_seconds, 3),
+        actual_fetches_per_minute=round((total / duration_seconds) * 60, 2) if duration_seconds > 0 else None,
+        endpoint_max_workers=workers,
+        api_rate_limit_per_minute=api_rate_limit_per_minute,
+    )
 
 
 def split_senior_mens_international_fixtures(
@@ -1556,15 +1640,16 @@ def ingest_senior_mens_international_bronze(
         raise ValueError("Provide target_date or both date_from and date_to")
 
     active_run_id = run_id or f"intl-{utc_now_iso()}"
+    date_scope_fields = _date_scope_log_fields(dates)
     _log_ingestion_event(
         logger,
         logging.INFO,
         "bronze_ingest_started",
         run_id=active_run_id,
         stage="bronze_ingest",
-        target_date=target_date,
         total=len(dates),
         status=CHECKPOINT_PENDING,
+        **date_scope_fields,
     )
     all_fixture_ids = []
     discovered_count = 0
@@ -1645,13 +1730,13 @@ def ingest_senior_mens_international_bronze(
         "bronze_ingest_completed",
         run_id=active_run_id,
         stage="bronze_ingest",
-        target_date=target_date,
         total=len(dates),
         status=CHECKPOINT_COMPLETED,
         discovered_fixtures=summary.discovered_fixtures,
         eligible_fixtures=summary.eligible_fixtures,
         skipped_fixtures=summary.skipped_fixtures,
         failed_fixtures=summary.failed_fixtures,
+        **date_scope_fields,
     )
     return summary
 
@@ -1841,21 +1926,47 @@ def upsert_endpoint_checkpoint(
     response_hash: Optional[str] = None,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
 ) -> None:
+    upsert_endpoint_checkpoints(
+        spark,
+        [{
+            "run_id": run_id,
+            "target_date": target_date,
+            "fixture_id": fixture_id,
+            "endpoint": endpoint,
+            "status": status,
+            "attempt_count": attempt_count,
+            "last_error": last_error,
+            "response_hash": response_hash,
+        }],
+        checkpoint_table=checkpoint_table,
+    )
+
+
+def upsert_endpoint_checkpoints(
+    spark,
+    checkpoint_rows: Iterable[Mapping],
+    *,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+) -> None:
+    normalized_rows = []
+    for row in checkpoint_rows:
+        normalized_rows.append((
+            row["run_id"],
+            row.get("target_date"),
+            int(row["fixture_id"]) if row.get("fixture_id") is not None else None,
+            row["endpoint"],
+            row["status"],
+            int(row.get("attempt_count", 1)),
+            row.get("last_error"),
+            row.get("response_hash"),
+        ))
+    if not normalized_rows:
+        return
     ensure_fixture_endpoint_checkpoint_table(spark, checkpoint_table=checkpoint_table)
     F, *_ = _require_pyspark()
-    rows = [(
-        run_id,
-        target_date,
-        int(fixture_id) if fixture_id is not None else None,
-        endpoint,
-        status,
-        int(attempt_count),
-        last_error,
-        response_hash,
-    )]
     staged = (
         spark.createDataFrame(
-            rows,
+            normalized_rows,
             (
                 "run_id string, target_date string, fixture_id int, endpoint string, "
                 "status string, attempt_count int, last_error string, response_hash string"
