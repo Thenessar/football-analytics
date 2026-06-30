@@ -5,9 +5,10 @@ from football_analytics.databricks.config import DatabricksPipelineConfig, load_
 from football_analytics.databricks.logging import configure_json_logging
 from football_analytics.databricks.tables import table_name
 from football_analytics.databricks_ingestion import (
-    ingest_fixture_player_stats_to_delta,
+    ingest_fixture_metadata_to_bronze,
+    ingest_lineups_for_fixtures_to_bronze,
+    ingest_player_stats_for_fixtures_to_bronze,
     ingest_senior_mens_international_bronze,
-    transform_bronze_to_silver,
     utc_now_iso,
 )
 
@@ -44,14 +45,47 @@ api_key = config.api_key or dbutils.secrets.get("football-api", "api-football-ke
 logger = configure_json_logging(level=logging.INFO, logger_name="football_analytics.bronze_ingest")
 
 if fixture_id:
-    silver_df = ingest_fixture_player_stats_to_delta(
+    fixture_payload = ingest_fixture_metadata_to_bronze(
         spark,
         int(fixture_id),
         api_key=api_key,
-        bronze_path=table_name(config, "bronze", "football_match_raw"),
-        silver_path=table_name(config, "silver", "football_player_match_stats"),
+        run_id=run_id,
+        target_date=target_date or None,
+        bronze_path=table_name(config, "bronze", "football_fixtures_raw"),
+        checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+        logger=logger,
     )
-    display({"mode": "fixture_id", "fixture_id": int(fixture_id)})
+    player_summary = ingest_player_stats_for_fixtures_to_bronze(
+        spark,
+        [int(fixture_id)],
+        api_key=api_key,
+        bronze_path=table_name(config, "bronze", "football_match_raw"),
+        run_id=run_id,
+        target_date=target_date or None,
+        force_refresh=force_refresh,
+        checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+        logger=logger,
+    )
+    lineup_summary = None
+    if include_lineups:
+        lineup_summary = ingest_lineups_for_fixtures_to_bronze(
+            spark,
+            [int(fixture_id)],
+            api_key=api_key,
+            bronze_path=table_name(config, "bronze", "football_lineups_raw"),
+            run_id=run_id,
+            target_date=target_date or None,
+            force_refresh=force_refresh,
+            checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+            logger=logger,
+        )
+    display({
+        "mode": "fixture_id",
+        "fixture_id": int(fixture_id),
+        "fixture_rows": len(fixture_payload.get("response", [])),
+        "player_stats": player_summary.as_dict(),
+        "lineups": lineup_summary.as_dict() if lineup_summary else None,
+    })
 else:
     summary = ingest_senior_mens_international_bronze(
         spark,
@@ -70,18 +104,3 @@ else:
         logger=logger,
     )
     display(summary.as_dict())
-    logger.info(
-        "bronze_to_silver_started",
-        extra={"event": "bronze_to_silver_started", "run_id": run_id, "stage": "bronze_to_silver"},
-    )
-    silver_df = transform_bronze_to_silver(
-        spark,
-        bronze_path=table_name(config, "bronze", "football_match_raw"),
-        silver_path=table_name(config, "silver", "football_player_match_stats"),
-    )
-    logger.info(
-        "bronze_to_silver_completed",
-        extra={"event": "bronze_to_silver_completed", "run_id": run_id, "stage": "bronze_to_silver"},
-    )
-
-display(silver_df.limit(20))

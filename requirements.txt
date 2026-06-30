@@ -7,3 +7,4 @@ jinja2>=3.1.2
 pyarrow>=12.0.0
 openpyxl>=3.1.2
 pytest>=7.4.0
+dbt-databricks>=1.8.0

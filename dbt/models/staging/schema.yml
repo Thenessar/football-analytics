@@ -1,0 +1,90 @@
+version: 2
+
+models:
+  - name: stg_football_fixtures
+    description: Silver fixture rows parsed from raw API-Football fixture envelopes.
+    columns:
+      - name: fixture_id
+        description: API-Football fixture identifier.
+        tests:
+          - unique
+          - not_null
+      - name: fixture_date_utc
+        tests:
+          - not_null
+      - name: home_team_id
+        tests:
+          - not_null
+      - name: away_team_id
+        tests:
+          - not_null
+      - name: status_short
+        tests:
+          - not_null
+
+  - name: stg_football_player_match_stats
+    description: Silver player-match statistics parsed from raw API-Football player envelopes.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football_fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: player_id
+        tests:
+          - not_null
+      - name: games_minutes
+        tests:
+          - not_null
+      - name: shots_total
+        tests:
+          - not_null
+      - name: shots_on
+        tests:
+          - not_null
+      - name: goals_total
+        tests:
+          - not_null
+
+  - name: stg_football_lineups
+    description: Silver lineup rows parsed from raw API-Football lineup envelopes.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football_fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: player_id
+        tests:
+          - not_null
+      - name: is_starting
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
