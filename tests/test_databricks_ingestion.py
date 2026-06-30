@@ -46,6 +46,20 @@ def test_daily_dates_are_inclusive():
     ]
 
 
+def test_date_scope_log_fields_use_single_date_or_range():
+    assert ingestion._date_scope_log_fields(["2026-06-25"]) == {
+        "date_scope": "single_day",
+        "target_date": "2026-06-25",
+        "requested_dates_count": 1,
+    }
+    assert ingestion._date_scope_log_fields(["2026-06-25", "2026-06-26"]) == {
+        "date_scope": "date_range",
+        "date_from": "2026-06-25",
+        "date_to": "2026-06-26",
+        "requested_dates_count": 2,
+    }
+
+
 def test_legacy_world_cup_fixture_wrapper_filters_non_world_cup(monkeypatch):
     def fake_fetch(endpoint, params, *, api_key=None):
         assert endpoint == "fixtures"
@@ -291,8 +305,15 @@ def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
     assert "fixture_endpoint_skipped" in events
     assert "fixture_endpoint_started" in events
     assert "fixture_endpoint_completed" in events
+    assert "endpoint_fetch_batch_completed" in events
     assert failed["fixture_id"] == 12
     assert failed["error"] == "temporary failure without payload"
+    batch_completed = next(record[2] for record in log_records if record[1] == "endpoint_fetch_batch_completed")
+    assert batch_completed["target_date"] == "2026-06-25"
+    assert batch_completed["endpoint"] == ingestion.PLAYER_STATS_ENDPOINT
+    assert batch_completed["total"] == 2
+    assert batch_completed["successful_fetches"] == 1
+    assert batch_completed["failed_fetches"] == 1
     assert checkpoint_records == [
         (10, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_SKIPPED),
         (11, ingestion.PLAYER_STATS_ENDPOINT, ingestion.CHECKPOINT_PENDING),
@@ -424,6 +445,54 @@ def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypa
     assert player_fixture_ids == [100]
     assert summary.discovered_fixtures == 2
     assert summary.eligible_fixtures == 1
+
+
+def test_medallion_bronze_logs_single_date_or_date_range(monkeypatch):
+    log_records = []
+
+    class FakeLogger:
+        def log(self, level, message, extra=None):
+            log_records.append((message, extra or {}))
+
+    def fake_discover(spark, match_date, **kwargs):
+        return ingestion.FixtureDiscoveryResult(
+            target_date=match_date,
+            raw_payload={"response": []},
+            eligible_fixtures=(),
+            skipped_fixtures=(),
+        )
+
+    monkeypatch.setattr(ingestion, "discover_senior_mens_fixtures_for_date", fake_discover)
+    monkeypatch.setattr(
+        ingestion,
+        "ingest_player_stats_for_fixtures_to_bronze",
+        lambda *args, **kwargs: ingestion.BronzeIngestionSummary(
+            requested_dates=(),
+            discovered_fixtures=0,
+            ingested_fixtures=0,
+            skipped_fixtures=0,
+            failed_fixtures=0,
+            fixture_ids=(),
+        ),
+    )
+
+    ingestion.ingest_senior_mens_international_bronze(
+        spark=None,
+        date_from="2026-06-25",
+        date_to="2026-06-26",
+        include_lineups=False,
+        logger=FakeLogger(),
+    )
+
+    started = next(extra for message, extra in log_records if message == "bronze_ingest_started")
+    completed = next(extra for message, extra in log_records if message == "bronze_ingest_completed")
+
+    assert started["date_scope"] == "date_range"
+    assert started["date_from"] == "2026-06-25"
+    assert started["date_to"] == "2026-06-26"
+    assert started["requested_dates_count"] == 2
+    assert completed["date_from"] == "2026-06-25"
+    assert completed["date_to"] == "2026-06-26"
 
 
 def test_lineup_empty_response_is_skipped_not_failed(monkeypatch):
