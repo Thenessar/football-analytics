@@ -64,6 +64,8 @@ date_from
 date_to
 force_refresh
 include_lineups
+endpoint_max_workers
+api_rate_limit_per_minute
 load_rankings_seed
 ```
 

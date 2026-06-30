@@ -34,6 +34,12 @@ variables:
   serverless_performance_target:
     description: Serverless workflow performance mode.
     default: STANDARD
+  endpoint_max_workers:
+    description: Concurrent driver-side endpoint fetch workers for Bronze ingestion.
+    default: "8"
+  api_rate_limit_per_minute:
+    description: Driver-side API call spacing limit for Bronze ingestion; keep at or below the provider cap.
+    default: "240"
 
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

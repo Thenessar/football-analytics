@@ -57,7 +57,6 @@ def test_bundle_passes_catalog_schema_parameters_to_table_aware_tasks():
         for parameter in ("catalog", "bronze_schema", "silver_schema", "gold_schema", "ops_schema"):
             assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
-
 def test_bundle_runs_dbt_after_bronze_ingestion():
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
 
@@ -78,6 +77,20 @@ def test_bundle_runs_dbt_after_bronze_ingestion():
         bundle,
         flags=re.S,
     ).group("task")
+
+
+def test_bundle_passes_parallelism_parameters_to_bronze_ingest():
+    bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
+    match = re.search(
+        r"- task_key: bronze_ingest\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+        bundle,
+        flags=re.S,
+    )
+
+    assert match is not None
+    task_block = match.group("task")
+    for parameter in ("endpoint_max_workers", "api_rate_limit_per_minute"):
+        assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 
 def test_databricks_notebook_files_match_medallion_order():
