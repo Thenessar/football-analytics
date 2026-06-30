@@ -1,0 +1,35 @@
+name: football_analytics
+version: "1.0.0"
+config-version: 2
+
+profile: football_analytics_databricks
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - target
+  - dbt_packages
+
+vars:
+  ranking_as_of_date: "2022-12-22"
+
+seeds:
+  football_analytics:
+    +catalog: "{{ var('catalog', env_var('DBT_FOOTBALL_CATALOG', 'football_analytics')) }}"
+    +schema: "{{ var('bronze_schema', env_var('DBT_FOOTBALL_BRONZE_SCHEMA', 'bronze')) }}"
+
+models:
+  football_analytics:
+    staging:
+      +catalog: "{{ var('catalog', env_var('DBT_FOOTBALL_CATALOG', 'football_analytics')) }}"
+      +schema: "{{ var('silver_schema', env_var('DBT_FOOTBALL_SILVER_SCHEMA', 'silver')) }}"
+      +materialized: table
+    marts:
+      +catalog: "{{ var('catalog', env_var('DBT_FOOTBALL_CATALOG', 'football_analytics')) }}"
+      +schema: "{{ var('gold_schema', env_var('DBT_FOOTBALL_GOLD_SCHEMA', 'gold')) }}"
+      +materialized: table

@@ -5,8 +5,8 @@ include:
   - resources/*.yml
 
 variables:
-  cluster_id:
-    description: Existing all-purpose or job cluster ID used to run notebook tasks.
+  sql_warehouse_id:
+    description: Databricks serverless SQL warehouse ID used to run dbt tasks.
   catalog:
     description: Unity Catalog catalog for managed football analytics tables.
     default: football_analytics
@@ -31,6 +31,9 @@ variables:
   schedule_pause_status:
     description: Use PAUSED for dev and UNPAUSED when production scheduling is ready.
     default: PAUSED
+  serverless_performance_target:
+    description: Serverless workflow performance mode.
+    default: STANDARD
   endpoint_max_workers:
     description: Concurrent driver-side endpoint fetch workers for Bronze ingestion.
     default: "8"

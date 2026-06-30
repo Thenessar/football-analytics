@@ -678,6 +678,57 @@ def test_fifa_seed_table_writer_uses_python_rows_not_spark_csv():
     assert spark.created.rows[0]["team_name"] == "Brazil"
 
 
+def test_ingest_fixture_metadata_lands_fixture_id_bronze_payload(monkeypatch):
+    captured = {"checkpoints": []}
+    payload = {"response": [{"fixture": {"id": 1489437}}]}
+
+    def fake_fetch(endpoint, params, *, api_key=None, logger=None):
+        captured["fetch"] = {
+            "endpoint": endpoint,
+            "params": params,
+            "api_key": api_key,
+            "logger": logger,
+        }
+        return payload
+
+    def fake_write(spark, api_payloads, **kwargs):
+        captured["write"] = {
+            "spark": spark,
+            "api_payloads": tuple(api_payloads),
+            **kwargs,
+        }
+
+    def fake_checkpoint(spark, **kwargs):
+        captured["checkpoints"].append(kwargs)
+
+    monkeypatch.setattr(ingestion, "_fetch_payload_with_optional_logger", fake_fetch)
+    monkeypatch.setattr(ingestion, "write_bronze_raw_envelopes", fake_write)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", fake_checkpoint)
+
+    result = ingestion.ingest_fixture_metadata_to_bronze(
+        spark=object(),
+        fixture_id=1489437,
+        api_key="secret",
+        run_id="run-1",
+        target_date="2026-06-25",
+        bronze_path="football_analytics.bronze.football_fixtures_raw",
+        checkpoint_table="football_analytics.ops.ingestion_state_checkpoint",
+    )
+
+    assert result == payload
+    assert captured["fetch"]["endpoint"] == ingestion.FIXTURES_ENDPOINT
+    assert captured["fetch"]["params"] == {"id": 1489437}
+    assert captured["write"]["api_payloads"] == (payload,)
+    assert captured["write"]["request_params"] == {"id": 1489437}
+    assert captured["write"]["fixture_id"] == 1489437
+    assert captured["write"]["target_date"] == "2026-06-25"
+    assert captured["write"]["bronze_path"] == "football_analytics.bronze.football_fixtures_raw"
+    assert [row["status"] for row in captured["checkpoints"]] == [
+        ingestion.CHECKPOINT_PENDING,
+        ingestion.CHECKPOINT_COMPLETED,
+    ]
+
+
 def test_accent_translation_map_is_valid_for_pyspark_translate():
     assert len(ingestion.ACCENTED_CHARS) == len(ingestion.ASCII_CHARS)
     assert "Á" in ingestion.ACCENTED_CHARS

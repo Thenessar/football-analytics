@@ -1,0 +1,19 @@
+football_analytics_databricks:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      catalog: "{{ env_var('DBT_FOOTBALL_CATALOG', 'football_analytics') }}"
+      schema: "{{ env_var('DBT_FOOTBALL_SILVER_SCHEMA', 'silver_dev') }}"
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4
+    prod:
+      type: databricks
+      catalog: "{{ env_var('DBT_FOOTBALL_CATALOG', 'football_analytics') }}"
+      schema: "{{ env_var('DBT_FOOTBALL_SILVER_SCHEMA', 'silver') }}"
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4

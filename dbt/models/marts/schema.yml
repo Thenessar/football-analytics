@@ -1,0 +1,108 @@
+version: 2
+
+models:
+  - name: football_team_match_context
+    description: Gold team-fixture context table with one row per team per fixture.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football_fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: opponent_team_id
+        tests:
+          - not_null
+      - name: home_away
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['home', 'away']
+
+  - name: football_rating_baseline
+    description: Gold model-ready FIFA ranking baseline with normalized team names.
+    columns:
+      - name: rank
+        tests:
+          - unique
+          - not_null
+      - name: team_name
+        tests:
+          - not_null
+      - name: rating
+        tests:
+          - not_null
+      - name: ranking_as_of_date
+        tests:
+          - not_null
+
+  - name: football_player_shot_features
+    description: Gold player shot-rate features joined to fixture context.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football_player_match_stats')
+                field: fixture_id
+      - name: player_id
+        tests:
+          - not_null
+      - name: shots_per_90
+        tests:
+          - not_null
+      - name: shots_on_per_90
+        tests:
+          - not_null
+
+  - name: football_player_sapm
+    description: Gold S-APM-ready player features with position priors and context weights.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football_player_match_stats')
+                field: fixture_id
+      - name: player_id
+        tests:
+          - not_null
+      - name: position_group
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['F', 'M', 'D', 'G']
+      - name: shot_rate_smoothed_per_minute
+        tests:
+          - not_null
+      - name: sapm_interaction_weight
+        tests:
+          - not_null

@@ -776,6 +776,106 @@ def write_fixtures_bronze(
     )
 
 
+def ingest_fixture_metadata_to_bronze(
+    spark,
+    fixture_id: int,
+    *,
+    api_key: Optional[str] = None,
+    run_id: str = "manual",
+    target_date: Optional[str] = None,
+    bronze_path: str = BRONZE_FIXTURES_RAW_PATH,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    logger: Optional[logging.Logger] = None,
+) -> Mapping:
+    """Fetches one `/fixtures?id=...` envelope and lands it in Bronze."""
+    fixture_id = int(fixture_id)
+    request_params = {"id": fixture_id}
+    _log_ingestion_event(
+        logger,
+        logging.INFO,
+        "fixture_metadata_started",
+        run_id=run_id,
+        stage="bronze_ingest",
+        target_date=target_date,
+        endpoint=FIXTURES_ENDPOINT,
+        fixture_id=fixture_id,
+        status=CHECKPOINT_PENDING,
+    )
+    upsert_endpoint_checkpoint(
+        spark,
+        run_id=run_id,
+        target_date=target_date,
+        fixture_id=fixture_id,
+        endpoint=FIXTURES_ENDPOINT,
+        status=CHECKPOINT_PENDING,
+        checkpoint_table=checkpoint_table,
+    )
+    try:
+        payload = _fetch_payload_with_optional_logger(
+            FIXTURES_ENDPOINT,
+            request_params,
+            api_key=api_key,
+            logger=logger,
+        )
+        write_bronze_raw_envelopes(
+            spark,
+            [payload],
+            run_id=run_id,
+            source_endpoint=FIXTURES_ENDPOINT,
+            request_params=request_params,
+            target_date=target_date,
+            fixture_id=fixture_id,
+            bronze_path=bronze_path,
+        )
+        upsert_endpoint_checkpoint(
+            spark,
+            run_id=run_id,
+            target_date=target_date,
+            fixture_id=fixture_id,
+            endpoint=FIXTURES_ENDPOINT,
+            status=CHECKPOINT_COMPLETED,
+            response_hash=payload_hash(payload),
+            checkpoint_table=checkpoint_table,
+        )
+        _log_ingestion_event(
+            logger,
+            logging.INFO,
+            "fixture_metadata_completed",
+            run_id=run_id,
+            stage="bronze_ingest",
+            target_date=target_date,
+            endpoint=FIXTURES_ENDPOINT,
+            fixture_id=fixture_id,
+            status=CHECKPOINT_COMPLETED,
+            discovered_fixtures=len(payload.get("response", [])),
+        )
+        return payload
+    except Exception as error:
+        upsert_endpoint_checkpoint(
+            spark,
+            run_id=run_id,
+            target_date=target_date,
+            fixture_id=fixture_id,
+            endpoint=FIXTURES_ENDPOINT,
+            status=CHECKPOINT_FAILED,
+            last_error=str(error),
+            checkpoint_table=checkpoint_table,
+        )
+        _log_ingestion_event(
+            logger,
+            logging.ERROR,
+            "fixture_metadata_failed",
+            run_id=run_id,
+            stage="bronze_ingest",
+            target_date=target_date,
+            endpoint=FIXTURES_ENDPOINT,
+            fixture_id=fixture_id,
+            status=CHECKPOINT_FAILED,
+            error=_safe_log_error(error),
+        )
+        raise
+
+
 def write_fixture_eligibility_bronze(
     spark,
     *,

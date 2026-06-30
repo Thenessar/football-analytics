@@ -9,6 +9,8 @@ resources:
         timezone_id: UTC
         pause_status: ${var.schedule_pause_status}
 
+      performance_target: ${var.serverless_performance_target}
+
       parameters:
         - name: fixture_id
           default: ${var.fixture_id}
@@ -43,7 +45,6 @@ resources:
 
       tasks:
         - task_key: prepare_run
-          existing_cluster_id: ${var.cluster_id}
           notebook_task:
             notebook_path: ../notebooks/00_prepare_run.py
             base_parameters:
@@ -62,7 +63,6 @@ resources:
         - task_key: bronze_ingest
           depends_on:
             - task_key: prepare_run
-          existing_cluster_id: ${var.cluster_id}
           notebook_task:
             notebook_path: ../notebooks/01_bronze_ingest.py
             base_parameters:
@@ -81,36 +81,42 @@ resources:
               endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
               api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
 
-        - task_key: silver_normalize
+        - task_key: dbt_deps
           depends_on:
             - task_key: bronze_ingest
-          existing_cluster_id: ${var.cluster_id}
-          notebook_task:
-            notebook_path: ../notebooks/02_silver_normalize.py
-            base_parameters:
-              catalog: "{{job.parameters.catalog}}"
-              bronze_schema: "{{job.parameters.bronze_schema}}"
-              silver_schema: "{{job.parameters.silver_schema}}"
-              gold_schema: "{{job.parameters.gold_schema}}"
-              ops_schema: "{{job.parameters.ops_schema}}"
+          dbt_task:
+            project_directory: ../dbt
+            source: WORKSPACE
+            warehouse_id: ${var.sql_warehouse_id}
+            commands:
+              - dbt deps
+          environment_key: dbt_serverless
 
-        - task_key: gold_build
+        - task_key: dbt_seed
           depends_on:
-            - task_key: silver_normalize
-          existing_cluster_id: ${var.cluster_id}
-          notebook_task:
-            notebook_path: ../notebooks/03_gold_build.py
-            base_parameters:
-              catalog: "{{job.parameters.catalog}}"
-              bronze_schema: "{{job.parameters.bronze_schema}}"
-              silver_schema: "{{job.parameters.silver_schema}}"
-              gold_schema: "{{job.parameters.gold_schema}}"
-              ops_schema: "{{job.parameters.ops_schema}}"
+            - task_key: dbt_deps
+          dbt_task:
+            project_directory: ../dbt
+            source: WORKSPACE
+            warehouse_id: ${var.sql_warehouse_id}
+            commands:
+              - "dbt seed --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
+          environment_key: dbt_serverless
+
+        - task_key: dbt_build
+          depends_on:
+            - task_key: dbt_seed
+          dbt_task:
+            project_directory: ../dbt
+            source: WORKSPACE
+            warehouse_id: ${var.sql_warehouse_id}
+            commands:
+              - "dbt build --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
+          environment_key: dbt_serverless
 
         - task_key: quality_checks
           depends_on:
-            - task_key: gold_build
-          existing_cluster_id: ${var.cluster_id}
+            - task_key: dbt_build
           notebook_task:
             notebook_path: ../notebooks/04_quality_checks.py
             base_parameters:
@@ -119,3 +125,9 @@ resources:
               silver_schema: "{{job.parameters.silver_schema}}"
               gold_schema: "{{job.parameters.gold_schema}}"
               ops_schema: "{{job.parameters.ops_schema}}"
+
+      environments:
+        - environment_key: dbt_serverless
+          spec:
+            dependencies:
+              - dbt-databricks>=1.8.0

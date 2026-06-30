@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: bronze
+    catalog: "{{ var('catalog', env_var('DBT_FOOTBALL_CATALOG', 'football_analytics')) }}"
+    schema: "{{ var('bronze_schema', env_var('DBT_FOOTBALL_BRONZE_SCHEMA', 'bronze')) }}"
+    description: Raw API-Football payloads and externally materialized seed tables owned by Python ingestion.
+    tables:
+      - name: football_fixtures_raw
+        description: Raw `/fixtures` response envelopes persisted as JSON strings.
+      - name: football_match_raw
+        description: Raw `/fixtures/players` response envelopes persisted as JSON strings.
+      - name: football_lineups_raw
+        description: Raw `/fixtures/lineups` response envelopes persisted as JSON strings.
+      - name: fifa_mens_world_ranking_seed
+        description: Optional Python-materialized ranking seed table retained for compatibility.
