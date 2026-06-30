@@ -68,6 +68,7 @@ def test_bundle_runs_dbt_after_bronze_ingestion():
     assert "dbt build" in bundle
     assert "warehouse_id: ${var.sql_warehouse_id}" in bundle
     assert "environment_key: dbt_serverless" in bundle
+    assert "environment_version: ${var.serverless_environment_version}" in bundle
     assert "dbt-databricks>=1.8.0" in bundle
     assert "bronze_schema: \\\"{{job.parameters.bronze_schema}}\\\"" in bundle
     assert "silver_schema: \\\"{{job.parameters.silver_schema}}\\\"" in bundle
