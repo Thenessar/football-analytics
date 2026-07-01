@@ -18,7 +18,7 @@ jobs:
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-      SQL_WAREHOUSE_ID: ${{ vars.DATABRICKS_SQL_WAREHOUSE_ID }}
+      SQL_WAREHOUSE_ID: ${{ vars.DATABRICKS_SQL_WAREHOUSE_ID || secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
 
     steps:
       - name: Checkout
@@ -31,6 +31,13 @@ jobs:
 
       - name: Set up Databricks CLI
         uses: databricks/setup-cli@main
+
+      - name: Check required configuration
+        run: |
+          if [ -z "${SQL_WAREHOUSE_ID}" ]; then
+            echo "DATABRICKS_SQL_WAREHOUSE_ID must be set as a GitHub Actions variable or secret."
+            exit 1
+          fi
 
       - name: Validate bundle
         run: databricks bundle validate -t prod --var="sql_warehouse_id=${SQL_WAREHOUSE_ID}"
