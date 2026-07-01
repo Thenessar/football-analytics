@@ -94,6 +94,25 @@ def test_bundle_passes_parallelism_parameters_to_bronze_ingest():
         assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 
+def test_bundle_installs_project_wheel_for_notebook_tasks():
+    bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
+    job = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
+
+    assert "football_analytics_wheel:" in bundle_config
+    assert "type: whl" in bundle_config
+    assert "python -m pip wheel . --wheel-dir dist --no-deps" in bundle_config
+    assert "path: ." in bundle_config
+
+    for task_name in ("prepare_run", "bronze_ingest", "quality_checks"):
+        match = re.search(
+            rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+            job,
+            flags=re.S,
+        )
+        assert match is not None
+        assert "whl: ../dist/football_analytics-*.whl" in match.group("task")
+
+
 def test_databricks_notebook_files_match_medallion_order():
     notebook_names = sorted(path.name for path in (ROOT / "notebooks").glob("*.py"))
 

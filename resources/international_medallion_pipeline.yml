@@ -59,6 +59,8 @@ resources:
               gold_schema: "{{job.parameters.gold_schema}}"
               ops_schema: "{{job.parameters.ops_schema}}"
               load_rankings_seed: "{{job.parameters.load_rankings_seed}}"
+          libraries:
+            - whl: ../dist/football_analytics-*.whl
 
         - task_key: bronze_ingest
           depends_on:
@@ -80,6 +82,8 @@ resources:
               include_lineups: "{{job.parameters.include_lineups}}"
               endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
               api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
+          libraries:
+            - whl: ../dist/football_analytics-*.whl
 
         - task_key: dbt_deps
           depends_on:
@@ -125,6 +129,8 @@ resources:
               silver_schema: "{{job.parameters.silver_schema}}"
               gold_schema: "{{job.parameters.gold_schema}}"
               ops_schema: "{{job.parameters.ops_schema}}"
+          libraries:
+            - whl: ../dist/football_analytics-*.whl
 
       environments:
         - environment_key: dbt_serverless
