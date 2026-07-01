@@ -32,6 +32,8 @@ databricks bundle deploy -t dev --var="sql_warehouse_id=<warehouse-id>"
 databricks bundle run international_medallion_pipeline -t dev --var="sql_warehouse_id=<warehouse-id>"
 ```
 
+The bundle builds the local `football_analytics` package as a wheel during deploy and installs that wheel on each notebook task. This makes imports such as `from football_analytics.databricks.config import ...` available in the serverless job environment.
+
 If you authenticated with a named profile, add `-p <profile-name>` to each command.
 
 For a one-fixture manual run, pass the fixture as a job parameter in Databricks or set `fixture_id`.

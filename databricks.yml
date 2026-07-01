@@ -4,6 +4,12 @@ bundle:
 include:
   - resources/*.yml
 
+artifacts:
+  football_analytics_wheel:
+    type: whl
+    build: python -m pip wheel . --wheel-dir dist --no-deps
+    path: .
+
 variables:
   sql_warehouse_id:
     description: Databricks serverless SQL warehouse ID used to run dbt tasks.
