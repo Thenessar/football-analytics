@@ -67,6 +67,8 @@ targets:
 
   prod:
     mode: production
+    workspace:
+      root_path: /Workspace/Users/adam.r.denes@gmail.com/.bundle/${bundle.name}/${bundle.target}
     variables:
       catalog: football_analytics
       bronze_schema: bronze
