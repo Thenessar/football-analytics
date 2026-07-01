@@ -113,6 +113,13 @@ def test_bundle_installs_project_wheel_for_notebook_tasks():
         assert "whl: ../dist/football_analytics-*.whl" in match.group("task")
 
 
+def test_production_bundle_uses_stable_workspace_root_path():
+    bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
+
+    assert "mode: production" in bundle_config
+    assert "root_path: /Workspace/Users/adam.r.denes@gmail.com/.bundle/${bundle.name}/${bundle.target}" in bundle_config
+
+
 def test_databricks_notebook_files_match_medallion_order():
     notebook_names = sorted(path.name for path in (ROOT / "notebooks").glob("*.py"))
 
