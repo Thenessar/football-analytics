@@ -129,8 +129,6 @@ def test_databricks_notebook_files_match_medallion_order():
     assert notebook_names == [
         "00_prepare_run.py",
         "01_bronze_ingest.py",
-        "02_silver_normalize.py",
-        "03_gold_build.py",
         "04_quality_checks.py",
     ]
 
@@ -159,6 +157,7 @@ def test_bundle_references_renamed_notebooks_and_job():
         "existing_cluster_id",
         "league_id",
         "season",
+        "load_rankings_seed",
     ):
         assert stale not in bundle
 
@@ -210,5 +209,6 @@ def test_current_databricks_docs_do_not_describe_pipeline_as_world_cup_only():
     ):
         assert flow_step in docs
 
+    assert "`00_prepare_run.py` creates target schemas only" in docs
     assert "Silver staging models and Gold mart models live under `dbt/models`" in docs
     assert "Free Edition/serverless-style execution" in docs

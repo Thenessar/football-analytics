@@ -40,8 +40,6 @@ resources:
           default: ${var.endpoint_max_workers}
         - name: api_rate_limit_per_minute
           default: ${var.api_rate_limit_per_minute}
-        - name: load_rankings_seed
-          default: "true"
 
       tasks:
         - task_key: prepare_run
@@ -58,7 +56,6 @@ resources:
               silver_schema: "{{job.parameters.silver_schema}}"
               gold_schema: "{{job.parameters.gold_schema}}"
               ops_schema: "{{job.parameters.ops_schema}}"
-              load_rankings_seed: "{{job.parameters.load_rankings_seed}}"
           environment_key: notebook_serverless
 
         - task_key: bronze_ingest

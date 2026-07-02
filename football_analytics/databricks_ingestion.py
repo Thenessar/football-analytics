@@ -1,4 +1,3 @@
-import csv
 import json
 import logging
 import threading
@@ -6,13 +5,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 import requests
 
 from football_analytics.config import BASE_URL, HEADERS, HISTORICAL_ANCHOR_DATE
-from football_analytics.config import FIFA_RANKINGS_SEED_AS_OF_DATE, FIFA_RANKINGS_SEED_FILE
 from football_analytics.api import FootballApiClient, is_quota_error_payload, payload_hash
 from football_analytics.api.exceptions import FootballApiPayloadError
 from football_analytics.api.exceptions import FootballApiQuotaError as SharedFootballApiQuotaError
@@ -38,7 +35,6 @@ GOLD_PLAYER_SAPM_PATH = "/mnt/syndicate/gold/football_player_sapm"
 INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_state_checkpoint"
 WINDOW_INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_window_checkpoint"
 DEAD_LETTER_TABLE = "default.football_ingestion_dead_letter"
-FIFA_RANKINGS_SEED_TABLE = "default.fifa_mens_world_ranking_seed"
 CHECKPOINT_PENDING = "PENDING"
 CHECKPOINT_COMPLETED = "COMPLETED"
 CHECKPOINT_SKIPPED = "SKIPPED"
@@ -147,6 +143,13 @@ def iter_weekly_windows(
     return windows
 
 
+@dataclass(frozen=True)
+class IngestionDateSelection:
+    dates: tuple[str, ...]
+    mode: str
+    defaulted_from_checkpoint: bool = False
+
+
 def iter_daily_dates(start_date: str, end_date: str) -> list[str]:
     """Builds deterministic inclusive daily load dates."""
     start = date.fromisoformat(start_date)
@@ -159,6 +162,37 @@ def iter_daily_dates(start_date: str, end_date: str) -> list[str]:
         days.append(cursor.isoformat())
         cursor = cursor + timedelta(days=1)
     return days
+
+
+def resolve_ingestion_dates(
+    spark,
+    *,
+    target_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    today: Optional[str] = None,
+) -> IngestionDateSelection:
+    """Resolves manual date overrides or the default checkpoint-to-today range."""
+    if target_date:
+        return IngestionDateSelection((target_date,), "target_date")
+    if date_from or date_to:
+        if not (date_from and date_to):
+            raise ValueError("Provide both date_from and date_to, or neither")
+        return IngestionDateSelection(tuple(iter_daily_dates(date_from, date_to)), "date_range")
+
+    end_date = today or date.today().isoformat()
+    start_date = latest_completed_checkpoint_date(
+        spark,
+        checkpoint_table=checkpoint_table,
+    ) or end_date
+    if date.fromisoformat(start_date) > date.fromisoformat(end_date):
+        start_date = end_date
+    return IngestionDateSelection(
+        tuple(iter_daily_dates(start_date, end_date)),
+        "checkpoint_to_today",
+        defaulted_from_checkpoint=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -1113,71 +1147,6 @@ def fetch_football_api_payload(
         raise RuntimeError(str(error).replace("API-Sports", "Football-API")) from error
 
 
-def write_fifa_rankings_seed_table(
-    spark,
-    *,
-    seed_file: str = FIFA_RANKINGS_SEED_FILE,
-    seed_as_of_date: str = FIFA_RANKINGS_SEED_AS_OF_DATE,
-    table_name: str = FIFA_RANKINGS_SEED_TABLE,
-):
-    """
-    Materializes the December 2022 FIFA ranking CSV as a typed Delta seed table.
-
-    The source CSV intentionally stays raw in git. This loader normalizes the
-    source typo `Raiting` to `rating` for downstream joins and modeling. Rows
-    are loaded through Python so Databricks does not treat the repo-relative
-    seed file as a Hadoop path.
-    """
-    rows = [
-        {
-            **row,
-            "ranking_as_of_date": date.fromisoformat(str(row["ranking_as_of_date"])),
-        }
-        for row in read_fifa_rankings_seed_rows(seed_file, seed_as_of_date=seed_as_of_date)
-    ]
-    seed_df = spark.createDataFrame(
-        rows,
-        "rank int, team_name string, rating double, ranking_as_of_date date",
-    )
-    seed_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
-    return seed_df
-
-
-def resolve_local_seed_file(seed_file: str) -> str:
-    """Resolves repo-relative seed paths for local and Databricks bundle runs."""
-    path = Path(seed_file)
-    if path.is_absolute():
-        return str(path)
-
-    cwd_path = Path.cwd() / path
-    if cwd_path.exists():
-        return str(cwd_path)
-
-    repo_path = Path(__file__).resolve().parents[1] / path
-    if repo_path.exists():
-        return str(repo_path)
-
-    return str(path)
-
-
-def read_fifa_rankings_seed_rows(
-    seed_file: str = FIFA_RANKINGS_SEED_FILE,
-    *,
-    seed_as_of_date: str = FIFA_RANKINGS_SEED_AS_OF_DATE,
-) -> list[dict[str, object]]:
-    """Reads the raw seed CSV into typed local rows, normalizing `Raiting`."""
-    rows = []
-    with open(resolve_local_seed_file(seed_file), newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            rows.append({
-                "rank": int(row["Rank"]),
-                "team_name": row["Team"],
-                "rating": float(row["Raiting"]),
-                "ranking_as_of_date": seed_as_of_date,
-            })
-    return rows
-
-
 def fetch_senior_mens_international_fixtures_for_date(
     match_date: str,
     *,
@@ -1718,7 +1687,7 @@ def ingest_senior_mens_international_bronze(
     target_date: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    completed_only: bool = True,
+    completed_only: bool = False,
     force_refresh: bool = False,
     include_lineups: bool = True,
     required_fixture_ids: Optional[Iterable[int]] = None,
@@ -1732,12 +1701,14 @@ def ingest_senior_mens_international_bronze(
     api_rate_limit_per_minute: Optional[int] = None,
 ) -> BronzeIngestionSummary:
     """Runs Bronze fixture discovery plus eligible player-stat/lineup ingestion."""
-    if target_date:
-        dates = [target_date]
-    elif date_from and date_to:
-        dates = iter_daily_dates(date_from, date_to)
-    else:
-        raise ValueError("Provide target_date or both date_from and date_to")
+    date_selection = resolve_ingestion_dates(
+        spark,
+        target_date=target_date,
+        date_from=date_from,
+        date_to=date_to,
+        checkpoint_table=checkpoint_table,
+    )
+    dates = list(date_selection.dates)
 
     active_run_id = run_id or f"intl-{utc_now_iso()}"
     date_scope_fields = _date_scope_log_fields(dates)
@@ -1749,6 +1720,7 @@ def ingest_senior_mens_international_bronze(
         stage="bronze_ingest",
         total=len(dates),
         status=CHECKPOINT_PENDING,
+        date_selection_mode=date_selection.mode,
         **date_scope_fields,
     )
     all_fixture_ids = []
@@ -1832,6 +1804,7 @@ def ingest_senior_mens_international_bronze(
         stage="bronze_ingest",
         total=len(dates),
         status=CHECKPOINT_COMPLETED,
+        date_selection_mode=date_selection.mode,
         discovered_fixtures=summary.discovered_fixtures,
         eligible_fixtures=summary.eligible_fixtures,
         skipped_fixtures=summary.skipped_fixtures,
@@ -2106,6 +2079,39 @@ def completed_checkpoint_fixture_ids(
     return {int(row.fixture_id) for row in filtered.select("fixture_id").distinct().collect()}
 
 
+def latest_completed_checkpoint_date(
+    spark,
+    *,
+    checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
+    endpoints: Sequence[str] = (FIXTURES_ENDPOINT, PLAYER_STATS_ENDPOINT, LINEUPS_ENDPOINT),
+) -> Optional[str]:
+    """Returns the latest completed target date recorded by endpoint checkpoints."""
+    if spark is None or not hasattr(spark, "table"):
+        return None
+    F, *_ = _require_pyspark()
+    try:
+        checkpoint = spark.table(checkpoint_table)
+    except Exception:
+        return None
+
+    filtered = checkpoint.where(
+        (F.col("status") == CHECKPOINT_COMPLETED)
+        & F.col("target_date").isNotNull()
+        & F.col("endpoint").isin([str(endpoint) for endpoint in endpoints])
+    )
+    rows = filtered.agg(F.max("target_date").alias("target_date")).collect()
+    if not rows:
+        return None
+    value = rows[0]["target_date"] if hasattr(rows[0], "__getitem__") else rows[0].target_date
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
 def update_ingestion_checkpoint(
     spark,
     window_start_date: str,
@@ -2140,429 +2146,3 @@ def update_ingestion_checkpoint(
             records_ingested = source.records_ingested
         WHEN NOT MATCHED THEN INSERT *
     """)
-
-
-def ingest_fixture_player_stats_to_delta(
-    spark,
-    fixture_id: int,
-    *,
-    api_key: Optional[str] = None,
-    bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
-    silver_path: str = SILVER_PLAYER_MATCH_STATS_PATH,
-):
-    """
-    Fetches a fixture player-stat payload, lands it raw in Bronze, then refreshes Silver.
-    """
-    payload = fetch_football_api_payload(
-        "fixtures/players",
-        {"fixture": int(fixture_id)},
-        api_key=api_key,
-    )
-    write_player_stats_bronze(
-        spark,
-        [payload],
-        fixture_id=int(fixture_id),
-        bronze_path=bronze_path,
-    )
-    return transform_bronze_to_silver(
-        spark,
-        bronze_path=bronze_path,
-        silver_path=silver_path,
-    )
-
-
-def transform_bronze_fixtures_to_silver(
-    spark,
-    *,
-    bronze_path: str = BRONZE_FIXTURES_RAW_PATH,
-    silver_path: str = SILVER_FIXTURES_PATH,
-    mode: str = "merge",
-):
-    """Normalizes raw `/fixtures` envelopes into the Silver fixtures table."""
-    F, *_ = _require_pyspark()
-    schema = _football_api_fixtures_schema()
-    bronze = read_delta_target(spark, bronze_path)
-    parsed = bronze.withColumn("payload", F.from_json(F.col("raw_payload"), schema))
-    flattened = parsed.withColumn("fixture_entry", F.explode_outer("payload.response"))
-    silver = (
-        flattened
-        .select(
-            F.col("fixture_entry.fixture.id").cast("int").alias("fixture_id"),
-            F.to_timestamp("fixture_entry.fixture.date").alias("fixture_date_utc"),
-            F.col("fixture_entry.league.id").cast("int").alias("league_id"),
-            F.col("fixture_entry.league.name").alias("league_name"),
-            F.col("fixture_entry.league.season").cast("int").alias("league_season"),
-            F.col("fixture_entry.teams.home.id").cast("int").alias("home_team_id"),
-            F.col("fixture_entry.teams.home.name").alias("home_team_name"),
-            F.col("fixture_entry.teams.away.id").cast("int").alias("away_team_id"),
-            F.col("fixture_entry.teams.away.name").alias("away_team_name"),
-            F.col("fixture_entry.goals.home").cast("int").alias("home_goals"),
-            F.col("fixture_entry.goals.away").cast("int").alias("away_goals"),
-            F.col("fixture_entry.fixture.status.short").alias("status_short"),
-            F.col("fixture_entry.fixture.status.long").alias("status_long"),
-            F.col("fixture_entry.fixture.venue.name").alias("venue"),
-            F.col("fixture_entry.league.country").alias("country"),
-            F.col("response_hash"),
-        )
-        .where(F.col("fixture_id").isNotNull())
-        .withColumn("updated_at_utc", F.current_timestamp())
-        .dropDuplicates(["fixture_id"])
-    )
-    if mode == "merge":
-        merge_dataframe_to_delta_path(
-            spark,
-            silver,
-            target_path=silver_path,
-            keys=("fixture_id",),
-            temp_view="_silver_fixtures_updates",
-        )
-    else:
-        write_delta_target(silver, silver_path, mode=mode, overwrite_schema=True)
-    return silver
-
-
-def transform_bronze_to_silver(
-    spark,
-    *,
-    bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
-    silver_path: str = SILVER_PLAYER_MATCH_STATS_PATH,
-    mode: str = "merge",
-):
-    """
-    Cleans raw Football-API player-stat payloads into typed Silver rows.
-
-    Nulls in shots.total, shots.on, and goals.total are intercepted at the
-    nested metric node and explicitly cast to integer zero.
-    """
-    F, *_ = _require_pyspark()
-    schema = _football_api_player_stats_schema()
-
-    bronze = read_delta_target(spark, bronze_path)
-    parsed = bronze.withColumn("payload", F.from_json(F.col("raw_payload"), schema))
-    flattened = (
-        parsed
-        .withColumn("team_entry", F.explode_outer("payload.response"))
-        .withColumn("player_entry", F.explode_outer("team_entry.players"))
-        .withColumn("stat_entry", F.explode_outer("player_entry.statistics"))
-    )
-
-    silver = (
-        flattened
-        .select(
-            F.col("fixture_id").cast("int").alias("fixture_id"),
-            F.col("team_entry.team.id").cast("int").alias("team_id"),
-            F.col("team_entry.team.name").alias("team_name"),
-            F.col("player_entry.player.id").cast("int").alias("player_id"),
-            F.col("player_entry.player.name").alias("player_name"),
-            F.col("stat_entry.games.minutes").cast("int").alias("games_minutes"),
-            F.col("stat_entry.games.position").alias("games_position"),
-            F.coalesce(F.col("stat_entry.shots.total"), F.lit(0)).cast("int").alias("shots_total"),
-            F.coalesce(F.col("stat_entry.shots.on"), F.lit(0)).cast("int").alias("shots_on"),
-            F.coalesce(F.col("stat_entry.goals.total"), F.lit(0)).cast("int").alias("goals_total"),
-            F.col("response_hash"),
-        )
-        .where(F.col("player_id").isNotNull())
-        .withColumn("player_name_normalized", normalized_name_sql("player_name"))
-        .withColumn("team_name_normalized", normalized_name_sql("team_name"))
-        .withColumn("updated_at_utc", F.current_timestamp())
-        .dropDuplicates(["fixture_id", "team_id", "player_id"])
-    )
-
-    if mode == "merge":
-        merge_dataframe_to_delta_path(
-            spark,
-            silver,
-            target_path=silver_path,
-            keys=("fixture_id", "team_id", "player_id"),
-            temp_view="_silver_player_stats_updates",
-        )
-    else:
-        write_delta_target(silver, silver_path, mode=mode, overwrite_schema=True)
-    return silver
-
-
-def transform_bronze_lineups_to_silver(
-    spark,
-    *,
-    bronze_path: str = BRONZE_LINEUPS_RAW_PATH,
-    silver_path: str = SILVER_LINEUPS_PATH,
-    mode: str = "merge",
-):
-    """Normalizes raw `/fixtures/lineups` envelopes into Silver lineup rows."""
-    F, *_ = _require_pyspark()
-    schema = _football_api_lineups_schema()
-    bronze = read_delta_target(spark, bronze_path)
-    parsed = bronze.withColumn("payload", F.from_json(F.col("raw_payload"), schema))
-    team_rows = parsed.withColumn("team_entry", F.explode_outer("payload.response"))
-    starters = (
-        team_rows
-        .withColumn("player_entry", F.explode_outer("team_entry.startXI"))
-        .withColumn("is_starting", F.lit(True))
-    )
-    substitutes = (
-        team_rows
-        .withColumn("player_entry", F.explode_outer("team_entry.substitutes"))
-        .withColumn("is_starting", F.lit(False))
-    )
-    flattened = starters.unionByName(substitutes, allowMissingColumns=True)
-    silver = (
-        flattened
-        .select(
-            F.col("fixture_id").cast("int").alias("fixture_id"),
-            F.col("team_entry.team.id").cast("int").alias("team_id"),
-            F.col("team_entry.team.name").alias("team_name"),
-            F.col("player_entry.player.id").cast("int").alias("player_id"),
-            F.col("player_entry.player.name").alias("player_name"),
-            F.col("player_entry.player.pos").alias("position"),
-            F.col("player_entry.player.number").cast("int").alias("number"),
-            F.col("is_starting"),
-            F.col("team_entry.formation").alias("formation"),
-            F.col("response_hash"),
-        )
-        .where(F.col("player_id").isNotNull())
-        .withColumn("updated_at_utc", F.current_timestamp())
-        .dropDuplicates(["fixture_id", "team_id", "player_id"])
-    )
-    if mode == "merge":
-        merge_dataframe_to_delta_path(
-            spark,
-            silver,
-            target_path=silver_path,
-            keys=("fixture_id", "team_id", "player_id"),
-            temp_view="_silver_lineups_updates",
-        )
-    else:
-        write_delta_target(silver, silver_path, mode=mode, overwrite_schema=True)
-    return silver
-
-
-def build_gold_team_match_context(
-    spark,
-    *,
-    silver_fixtures_path: str = SILVER_FIXTURES_PATH,
-    gold_path: str = GOLD_TEAM_MATCH_CONTEXT_PATH,
-    mode: str = "overwrite",
-):
-    """Builds team-level match context features from Silver fixtures."""
-    F, *_ = _require_pyspark()
-    fixtures = read_delta_target(spark, silver_fixtures_path)
-    home_rows = fixtures.select(
-        "fixture_id",
-        "fixture_date_utc",
-        F.col("home_team_id").alias("team_id"),
-        F.col("home_team_name").alias("team_name"),
-        F.col("away_team_id").alias("opponent_team_id"),
-        F.col("away_team_name").alias("opponent_team_name"),
-        F.lit("home").alias("home_away"),
-        F.col("home_goals").alias("goals_for"),
-        F.col("away_goals").alias("goals_against"),
-        "league_id",
-        "league_name",
-        "league_season",
-        "status_short",
-    )
-    away_rows = fixtures.select(
-        "fixture_id",
-        "fixture_date_utc",
-        F.col("away_team_id").alias("team_id"),
-        F.col("away_team_name").alias("team_name"),
-        F.col("home_team_id").alias("opponent_team_id"),
-        F.col("home_team_name").alias("opponent_team_name"),
-        F.lit("away").alias("home_away"),
-        F.col("away_goals").alias("goals_for"),
-        F.col("home_goals").alias("goals_against"),
-        "league_id",
-        "league_name",
-        "league_season",
-        "status_short",
-    )
-    gold = (
-        home_rows
-        .unionByName(away_rows)
-        .withColumn("team_name_normalized", normalized_name_sql("team_name"))
-        .withColumn("opponent_team_name_normalized", normalized_name_sql("opponent_team_name"))
-        .withColumn("game_importance_scalar", F.lit(1.0))
-        .withColumn("opponent_strength_adjustment", F.lit(1.0))
-        .withColumn("defensive_containment_rating", F.lit(1.0))
-        .withColumn("defensive_elo", F.lit(1500.0))
-        .withColumn("updated_at_utc", F.current_timestamp())
-    )
-    write_delta_target(gold, gold_path, mode=mode, overwrite_schema=True)
-    return gold
-
-
-def build_gold_rating_baseline(
-    spark,
-    *,
-    seed_table: str = FIFA_RANKINGS_SEED_TABLE,
-    gold_path: str = GOLD_RATING_BASELINE_PATH,
-    mode: str = "overwrite",
-):
-    """Builds the model-ready rating baseline from the typed FIFA seed table."""
-    F, *_ = _require_pyspark()
-    baseline = (
-        spark.table(seed_table)
-        .select("rank", "team_name", "rating", "ranking_as_of_date")
-        .withColumn("team_name_normalized", normalized_name_sql("team_name"))
-        .withColumn("updated_at_utc", F.current_timestamp())
-    )
-    write_delta_target(baseline, gold_path, mode=mode, overwrite_schema=True)
-    return baseline
-
-
-def build_gold_player_shot_features(
-    spark,
-    *,
-    silver_player_stats_path: str = SILVER_PLAYER_MATCH_STATS_PATH,
-    silver_fixtures_path: str = SILVER_FIXTURES_PATH,
-    gold_path: str = GOLD_PLAYER_SHOT_FEATURES_PATH,
-    mode: str = "overwrite",
-):
-    """Builds model-ready player shot features from Silver player stats and fixtures."""
-    F, *_ = _require_pyspark()
-    players = read_delta_target(spark, silver_player_stats_path)
-    fixtures = read_delta_target(spark, silver_fixtures_path).select(
-        "fixture_id",
-        "fixture_date_utc",
-        "league_id",
-        "league_name",
-        "league_season",
-        "home_team_id",
-        "away_team_id",
-    )
-    features = (
-        players
-        .join(fixtures, "fixture_id", "left")
-        .withColumn(
-            "opponent_team_id",
-            F.when(F.col("team_id") == F.col("home_team_id"), F.col("away_team_id"))
-            .when(F.col("team_id") == F.col("away_team_id"), F.col("home_team_id")),
-        )
-        .withColumn(
-            "shots_per_90",
-            F.when(F.col("games_minutes") > 0, F.col("shots_total") * F.lit(90.0) / F.col("games_minutes"))
-            .otherwise(F.lit(0.0)),
-        )
-        .withColumn(
-            "shots_on_per_90",
-            F.when(F.col("games_minutes") > 0, F.col("shots_on") * F.lit(90.0) / F.col("games_minutes"))
-            .otherwise(F.lit(0.0)),
-        )
-        .withColumn("updated_at_utc", F.current_timestamp())
-    )
-    write_delta_target(features, gold_path, mode=mode, overwrite_schema=True)
-    return features
-
-
-def transform_silver_to_gold_sapm(
-    spark,
-    *,
-    silver_path: str = SILVER_PLAYER_MATCH_STATS_PATH,
-    position_prior_path: Optional[str] = None,
-    fixture_context_path: Optional[str] = None,
-    gold_path: str = GOLD_PLAYER_SAPM_PATH,
-    mode: str = "overwrite",
-):
-    """
-    Builds Gold-ready S-APM features from Silver player-match rows.
-
-    Optional context Delta inputs can provide position-level alpha/beta priors
-    and fixture-level stake/opponent weights. Missing context defaults to
-    neutral priors and weights so the transform remains deterministic.
-    """
-    F, *_ = _require_pyspark()
-
-    silver = read_delta_target(spark, silver_path)
-    enriched = silver.withColumn(
-        "position_group",
-        F.when(F.upper(F.col("games_position")).isin("F", "A", "ATTACKER", "FORWARD", "STRIKER"), F.lit("F"))
-        .when(F.upper(F.col("games_position")).isin("D", "DEFENDER", "DEFENCE"), F.lit("D"))
-        .when(F.upper(F.col("games_position")).isin("G", "GK", "GOALKEEPER"), F.lit("G"))
-        .otherwise(F.lit("M")),
-    )
-
-    if position_prior_path:
-        priors = read_delta_target(spark, position_prior_path).select(
-            "position_group",
-            F.col("alpha").cast("double").alias("prior_alpha"),
-            F.col("beta").cast("double").alias("prior_beta"),
-        )
-        enriched = enriched.join(priors, "position_group", "left")
-    else:
-        enriched = (
-            enriched
-            .withColumn(
-                "prior_alpha",
-                F.when(F.col("position_group") == "F", F.lit(2.6 * 3.0))
-                .when(F.col("position_group") == "M", F.lit(1.2 * 3.0))
-                .when(F.col("position_group") == "D", F.lit(0.5 * 3.0))
-                .otherwise(F.lit(0.0)),
-            )
-            .withColumn("prior_beta", F.lit(270.0))
-        )
-
-    if fixture_context_path:
-        context_source = read_delta_target(spark, fixture_context_path)
-        context_columns = set(context_source.columns)
-        context_select = [
-            F.col("fixture_id").cast("int").alias("context_fixture_id"),
-            F.col("game_importance_scalar").cast("double"),
-            F.col("opponent_strength_adjustment").cast("double"),
-            F.col("defensive_containment_rating").cast("double"),
-            F.col("defensive_elo").cast("double"),
-        ]
-        if "team_id" in context_columns:
-            context_select.append(F.col("team_id").cast("int").alias("context_team_id"))
-        context = context_source.select(*context_select)
-        if "team_id" in context_columns:
-            enriched = enriched.join(
-                context,
-                (enriched.fixture_id == context.context_fixture_id)
-                & (enriched.team_id == context.context_team_id),
-                "left",
-            ).drop("context_fixture_id", "context_team_id")
-        else:
-            enriched = enriched.join(
-                context,
-                enriched.fixture_id == context.context_fixture_id,
-                "left",
-            ).drop("context_fixture_id")
-    else:
-        enriched = (
-            enriched
-            .withColumn("game_importance_scalar", F.lit(1.0))
-            .withColumn("opponent_strength_adjustment", F.lit(1.0))
-            .withColumn("defensive_containment_rating", F.lit(1.0))
-            .withColumn("defensive_elo", F.lit(1500.0))
-        )
-
-    gold = (
-        enriched
-        .withColumn("prior_alpha", F.coalesce(F.col("prior_alpha"), F.lit(0.0)))
-        .withColumn("prior_beta", F.coalesce(F.col("prior_beta"), F.lit(270.0)))
-        .withColumn("game_importance_scalar", F.coalesce(F.col("game_importance_scalar"), F.lit(1.0)))
-        .withColumn("opponent_strength_adjustment", F.coalesce(F.col("opponent_strength_adjustment"), F.lit(1.0)))
-        .withColumn(
-            "shot_rate_smoothed_per_minute",
-            F.when(
-                (F.col("prior_beta") + F.col("games_minutes")) > 0,
-                (F.col("prior_alpha") + F.col("shots_total"))
-                / (F.col("prior_beta") + F.col("games_minutes")),
-            ).otherwise(F.lit(0.0)),
-        )
-        .withColumn(
-            "sapm_interaction_weight",
-            F.col("game_importance_scalar") * F.col("opponent_strength_adjustment"),
-        )
-        .withColumn(
-            "weighted_shots",
-            F.col("sapm_interaction_weight") * F.col("shots_total"),
-        )
-        .withColumn(
-            "weighted_minutes",
-            F.col("sapm_interaction_weight") * F.col("games_minutes"),
-        )
-    )
-
-    write_delta_target(gold, gold_path, mode=mode)
-    return gold
