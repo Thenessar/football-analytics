@@ -59,8 +59,7 @@ resources:
               gold_schema: "{{job.parameters.gold_schema}}"
               ops_schema: "{{job.parameters.ops_schema}}"
               load_rankings_seed: "{{job.parameters.load_rankings_seed}}"
-          libraries:
-            - whl: ../dist/football_analytics-*.whl
+          environment_key: notebook_serverless
 
         - task_key: bronze_ingest
           depends_on:
@@ -82,8 +81,7 @@ resources:
               include_lineups: "{{job.parameters.include_lineups}}"
               endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
               api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
-          libraries:
-            - whl: ../dist/football_analytics-*.whl
+          environment_key: notebook_serverless
 
         - task_key: dbt_deps
           depends_on:
@@ -129,10 +127,14 @@ resources:
               silver_schema: "{{job.parameters.silver_schema}}"
               gold_schema: "{{job.parameters.gold_schema}}"
               ops_schema: "{{job.parameters.ops_schema}}"
-          libraries:
-            - whl: ../dist/football_analytics-*.whl
+          environment_key: notebook_serverless
 
       environments:
+        - environment_key: notebook_serverless
+          spec:
+            environment_version: ${var.serverless_environment_version}
+            dependencies:
+              - ${workspace.root_path}/files/dist/football_analytics-0.1.0-py3-none-any.whl
         - environment_key: dbt_serverless
           spec:
             environment_version: ${var.serverless_environment_version}

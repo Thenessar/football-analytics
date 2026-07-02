@@ -94,7 +94,7 @@ def test_bundle_passes_parallelism_parameters_to_bronze_ingest():
         assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 
-def test_bundle_installs_project_wheel_for_notebook_tasks():
+def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
     bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
     job = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
 
@@ -102,6 +102,8 @@ def test_bundle_installs_project_wheel_for_notebook_tasks():
     assert "type: whl" in bundle_config
     assert "python -m pip wheel . --wheel-dir dist --no-deps" in bundle_config
     assert "path: ." in bundle_config
+    assert "environment_key: notebook_serverless" in job
+    assert "${workspace.root_path}/files/dist/football_analytics-0.1.0-py3-none-any.whl" in job
 
     for task_name in ("prepare_run", "bronze_ingest", "quality_checks"):
         match = re.search(
@@ -110,7 +112,8 @@ def test_bundle_installs_project_wheel_for_notebook_tasks():
             flags=re.S,
         )
         assert match is not None
-        assert "whl: ../dist/football_analytics-*.whl" in match.group("task")
+        assert "environment_key: notebook_serverless" in match.group("task")
+        assert "libraries:" not in match.group("task")
 
 
 def test_production_bundle_uses_stable_workspace_root_path():
