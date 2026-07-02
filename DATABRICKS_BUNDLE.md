@@ -51,10 +51,9 @@ The Databricks job keeps operational ingestion in Python and runs deterministic 
 dbt deps
 dbt seed
 dbt build
-04_quality_checks.py
 ```
 
-`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze/Ops. `dbt seed` is the only seed materialization step; `dbt build` excludes seeds and runs transformations/tests. Silver staging models and Gold mart models live under `dbt/models`.
+`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze. `dbt seed` materializes shared reference data such as the senior men's international league allowlist; `dbt build` excludes seeds and runs transformations/tests. Silver staging models and Gold mart models live under `dbt/models`.
 
 The bundled workflow is configured for Free Edition/serverless-style execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment. dbt task `catalog` and `schema` are deploy-time bundle variables, not `{{job.parameters.*}}` runtime references, because Databricks validates those fields during job deployment.
 The dbt task environment defaults to serverless environment version `4`; override `serverless_environment_version` if your workspace requires a different supported version.
@@ -72,7 +71,7 @@ endpoint_max_workers
 api_rate_limit_per_minute
 ```
 
-The FIFA men's ranking seed is versioned at `dbt/seeds/fifa_mens_world_ranking_december_2022.csv`; `football_rating_baseline` normalizes the source `Raiting` typo to `rating`.
+The senior men's international league allowlist is generated from `football_analytics/league_scope.py` into `dbt/seeds/senior_mens_international_leagues.csv` with `python scripts/generate_league_seed.py`. The FIFA men's ranking seed is versioned at `dbt/seeds/fifa_mens_world_ranking_december_2022.csv`; `football_rating_baseline` normalizes the source `Raiting` typo to `rating`.
 
 The schedule is paused by default. Set `schedule_pause_status=UNPAUSED` only when the job is ready to run automatically.
 

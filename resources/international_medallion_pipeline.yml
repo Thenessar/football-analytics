@@ -30,8 +30,6 @@ resources:
           default: ${var.silver_schema}
         - name: gold_schema
           default: ${var.gold_schema}
-        - name: ops_schema
-          default: ${var.ops_schema}
         - name: force_refresh
           default: "false"
         - name: include_lineups
@@ -55,7 +53,6 @@ resources:
               bronze_schema: "{{job.parameters.bronze_schema}}"
               silver_schema: "{{job.parameters.silver_schema}}"
               gold_schema: "{{job.parameters.gold_schema}}"
-              ops_schema: "{{job.parameters.ops_schema}}"
           environment_key: notebook_serverless
 
         - task_key: bronze_ingest
@@ -73,7 +70,6 @@ resources:
               bronze_schema: "{{job.parameters.bronze_schema}}"
               silver_schema: "{{job.parameters.silver_schema}}"
               gold_schema: "{{job.parameters.gold_schema}}"
-              ops_schema: "{{job.parameters.ops_schema}}"
               force_refresh: "{{job.parameters.force_refresh}}"
               include_lineups: "{{job.parameters.include_lineups}}"
               endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
@@ -118,19 +114,6 @@ resources:
             commands:
               - "dbt build --exclude resource_type:seed --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
           environment_key: dbt_serverless
-
-        - task_key: quality_checks
-          depends_on:
-            - task_key: dbt_build
-          notebook_task:
-            notebook_path: ../notebooks/04_quality_checks.py
-            base_parameters:
-              catalog: "{{job.parameters.catalog}}"
-              bronze_schema: "{{job.parameters.bronze_schema}}"
-              silver_schema: "{{job.parameters.silver_schema}}"
-              gold_schema: "{{job.parameters.gold_schema}}"
-              ops_schema: "{{job.parameters.ops_schema}}"
-          environment_key: notebook_serverless
 
       environments:
         - environment_key: notebook_serverless

@@ -10,7 +10,6 @@ dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
 dbutils.widgets.text("silver_schema", "silver")
 dbutils.widgets.text("gold_schema", "gold")
-dbutils.widgets.text("ops_schema", "ops")
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.dropdown("include_lineups", "true", ["true", "false"])
 
@@ -24,14 +23,12 @@ config = DatabricksPipelineConfig(
     bronze_schema=dbutils.widgets.get("bronze_schema"),
     silver_schema=dbutils.widgets.get("silver_schema"),
     gold_schema=dbutils.widgets.get("gold_schema"),
-    ops_schema=dbutils.widgets.get("ops_schema"),
 )
 
 for schema_name in {
     config.bronze_schema,
     config.silver_schema,
     config.gold_schema,
-    config.ops_schema,
 }:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {config.catalog}.{schema_name}")
 

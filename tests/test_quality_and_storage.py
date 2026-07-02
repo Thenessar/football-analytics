@@ -1,31 +1,11 @@
 import pytest
 
-from football_analytics.databricks_ingestion import natural_key_merge_plans
+from football_analytics.league_scope import SENIOR_MENS_INTERNATIONAL_LEAGUES, allowed_league_ids
 from football_analytics.quality.validators import (
     SENIOR_MENS_NATIONAL_LEAGUE_IDS,
     ValidationError,
     validate_senior_mens_international_fixture,
-    validate_world_cup_fixture,
 )
-
-
-def test_non_world_cup_fixture_1036663_is_rejected():
-    fixture = {
-        "fixture": {"id": 1036663, "status": {"short": "FT"}},
-        "league": {"id": 667, "season": 2023, "name": "Club Friendlies"},
-    }
-
-    with pytest.raises(ValidationError, match="not World Cup 2026"):
-        validate_world_cup_fixture(fixture)
-
-
-def test_world_cup_fixture_validation_accepts_completed_fixture():
-    fixture = {
-        "fixture": {"id": 1489437, "status": {"short": "FT"}},
-        "league": {"id": 1, "season": 2026, "name": "World Cup"},
-    }
-
-    validate_world_cup_fixture(fixture)
 
 
 def test_senior_mens_international_validation_accepts_friendlies_and_continental_competitions():
@@ -61,6 +41,7 @@ def test_senior_mens_international_validation_rejects_club_women_youth_and_olymp
 
 
 def test_senior_mens_league_allowlist_documents_scope():
+    assert SENIOR_MENS_NATIONAL_LEAGUE_IDS == allowed_league_ids()
     assert 10 in SENIOR_MENS_NATIONAL_LEAGUE_IDS
     assert 960 in SENIOR_MENS_NATIONAL_LEAGUE_IDS
     assert 667 not in SENIOR_MENS_NATIONAL_LEAGUE_IDS
@@ -68,14 +49,8 @@ def test_senior_mens_league_allowlist_documents_scope():
     assert 490 not in SENIOR_MENS_NATIONAL_LEAGUE_IDS
 
 
-def test_idempotent_merge_plans_use_required_natural_keys():
-    plans = natural_key_merge_plans()
+def test_league_scope_source_of_truth_has_unique_ids():
+    league_ids = [league_id for league_id, _ in SENIOR_MENS_INTERNATIONAL_LEAGUES]
 
-    assert plans["fixtures"].keys == ("fixture_id",)
-    assert plans["player_stats"].keys == ("fixture_id", "team_id", "player_id")
-    assert plans["lineups"].keys == ("fixture_id", "team_id", "player_id")
-    assert plans["player_stats"].predicate == (
-        "target.fixture_id = source.fixture_id AND "
-        "target.team_id = source.team_id AND "
-        "target.player_id = source.player_id"
-    )
+    assert league_ids == sorted(league_ids)
+    assert len(league_ids) == len(set(league_ids))

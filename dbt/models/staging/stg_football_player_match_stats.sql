@@ -56,6 +56,7 @@ typed as (
 deduped as (
     select *
     from typed
+    where fixture_id in (select fixture_id from {{ ref('stg_football_fixtures') }})
     qualify row_number() over (
         partition by fixture_id, team_id, player_id
         order by updated_at_utc desc

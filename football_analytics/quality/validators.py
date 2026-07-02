@@ -1,35 +1,11 @@
 import re
 from typing import Mapping
 
-EXPECTED_WORLD_CUP_LEAGUE_ID = 1
-EXPECTED_WORLD_CUP_SEASON = 2026
+from football_analytics.league_scope import allowed_league_ids
+
+
 COMPLETED_STATUSES = {"FT", "AET", "PEN"}
-SENIOR_MENS_NATIONAL_LEAGUE_IDS = {
-    1,    # World Cup
-    4,    # Euro Championship
-    5,    # UEFA Nations League
-    6,    # Africa Cup of Nations
-    7,    # Asian Cup
-    9,    # Copa America
-    10,   # Friendlies
-    21,   # Confederations Cup
-    22,   # CONCACAF Gold Cup
-    29,   # World Cup - Qualification Africa
-    30,   # World Cup - Qualification Asia
-    31,   # World Cup - Qualification CONCACAF
-    32,   # World Cup - Qualification Europe
-    33,   # World Cup - Qualification Oceania
-    34,   # World Cup - Qualification South America
-    35,   # Asian Cup - Qualification
-    36,   # Africa Cup of Nations - Qualification
-    37,   # World Cup - Qualification Intercontinental Play-offs
-    536,  # CONCACAF Nations League
-    806,  # OFC Nations Cup
-    808,  # CONCACAF Nations League - Qualification
-    858,  # CONCACAF Gold Cup - Qualification
-    913,  # CONMEBOL - UEFA Finalissima
-    960,  # Euro Championship - Qualification
-}
+SENIOR_MENS_NATIONAL_LEAGUE_IDS = allowed_league_ids()
 SENIOR_MENS_INTERNATIONAL_LEAGUE_IDS = SENIOR_MENS_NATIONAL_LEAGUE_IDS
 NON_SENIOR_MENS_TOKENS = (
     "women",
@@ -77,28 +53,6 @@ def is_senior_mens_international_fixture(
     if any(token in combined for token in NON_SENIOR_MENS_TOKENS):
         return False
     return league_id in allowed_league_ids
-
-
-def validate_world_cup_fixture(
-    fixture: Mapping,
-    *,
-    league_id: int = EXPECTED_WORLD_CUP_LEAGUE_ID,
-    season: int = EXPECTED_WORLD_CUP_SEASON,
-    require_completed: bool = True,
-) -> None:
-    """Legacy compatibility validator for World Cup 2026-specific callers."""
-    league = fixture.get("league") or {}
-    fixture_meta = fixture.get("fixture") or {}
-    status = fixture_meta.get("status") or {}
-    if league.get("id") != league_id or league.get("season") != season:
-        raise ValidationError(
-            f"Fixture {fixture_meta.get('id')} is not World Cup {season}: "
-            f"league.id={league.get('id')} league.season={league.get('season')}"
-        )
-    if require_completed and status.get("short") not in COMPLETED_STATUSES:
-        raise ValidationError(
-            f"Fixture {fixture_meta.get('id')} has unsupported status {status.get('short')}"
-        )
 
 
 def validate_senior_mens_international_fixture(

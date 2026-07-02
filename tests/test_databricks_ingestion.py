@@ -7,8 +7,8 @@ from football_analytics import databricks_ingestion as ingestion
 
 def test_delta_paths_match_bronze_and_silver_contract():
     assert ingestion.BRONZE_FOOTBALL_MATCH_RAW_PATH == "/mnt/syndicate/bronze/football_match_raw"
-    assert ingestion.SILVER_PLAYER_MATCH_STATS_PATH == "/mnt/syndicate/silver/football_player_match_stats"
-    assert ingestion.INGESTION_STATE_CHECKPOINT_TABLE == "default.ingestion_state_checkpoint"
+    assert ingestion.BRONZE_LINEUPS_RAW_PATH == "/mnt/syndicate/bronze/football_lineups_raw"
+    assert ingestion.INGESTION_STATE_CHECKPOINT_TABLE == "default.bronze_ingestion_state_checkpoint"
 
 
 def test_delta_target_detection_distinguishes_tables_from_paths():
@@ -78,30 +78,6 @@ def test_date_scope_log_fields_use_single_date_or_range():
     }
 
 
-def test_legacy_world_cup_fixture_wrapper_filters_non_world_cup(monkeypatch):
-    def fake_fetch(endpoint, params, *, api_key=None):
-        assert endpoint == "fixtures"
-        assert params == {"date": "2026-06-25", "timezone": "UTC"}
-        return {
-            "response": [
-                {
-                    "fixture": {"id": 1489437, "status": {"short": "FT"}},
-                    "league": {"id": 1, "season": 2026},
-                },
-                {
-                    "fixture": {"id": 1036663, "status": {"short": "FT"}},
-                    "league": {"id": 667, "season": 2023},
-                },
-            ]
-        }
-
-    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
-
-    fixtures = ingestion.fetch_world_cup_fixtures_for_date("2026-06-25")
-
-    assert [(fixture["fixture"]["id"]) for fixture in fixtures] == [1489437]
-
-
 def test_fetch_senior_mens_international_fixtures_for_date_keeps_national_competitions(monkeypatch):
     def fake_fetch(endpoint, params, *, api_key=None):
         return {
@@ -162,34 +138,6 @@ def test_senior_mens_international_player_stats_bronze_discovers_fixture_range(m
     assert discovered_dates == ["2026-06-25", "2026-06-26"]
     assert ingested_fixture_ids == [1001, 1002]
     assert summary.as_dict()["ingested_fixtures"] == 2
-
-
-def test_legacy_world_cup_player_stats_wrapper_delegates_to_senior_international_loader(monkeypatch):
-    captured = {}
-
-    def fake_loader(spark, **kwargs):
-        captured["spark"] = spark
-        captured["kwargs"] = kwargs
-        return ingestion.BronzeIngestionSummary(
-            requested_dates=("2026-06-25",),
-            discovered_fixtures=0,
-            ingested_fixtures=0,
-            skipped_fixtures=0,
-            failed_fixtures=0,
-            fixture_ids=(),
-        )
-
-    monkeypatch.setattr(ingestion, "ingest_senior_mens_international_player_stats_bronze", fake_loader)
-
-    summary = ingestion.ingest_world_cup_player_stats_bronze(
-        spark=object(),
-        target_date="2026-06-25",
-        completed_only=False,
-    )
-
-    assert summary.requested_dates == ("2026-06-25",)
-    assert captured["kwargs"]["target_date"] == "2026-06-25"
-    assert captured["kwargs"]["completed_only"] is False
 
 
 def test_endpoint_ingestion_plan_skips_completed_unless_forced():
@@ -617,80 +565,6 @@ def test_lineups_write_pending_checkpoint_before_fetch(monkeypatch):
     assert operations[-1] == ("checkpoint", 1489437, ingestion.CHECKPOINT_COMPLETED)
 
 
-def test_delta_merge_sql_uses_natural_key_predicate_and_updates_non_keys():
-    sql = ingestion.build_delta_merge_sql(
-        "delta.`/tmp/silver`",
-        "_updates",
-        ("fixture_id", "team_id", "player_id"),
-        ("fixture_id", "team_id", "player_id", "shots_total", "updated_at_utc"),
-    )
-
-    assert "target.fixture_id <=> source.fixture_id" in sql
-    assert "shots_total = source.shots_total" in sql
-    assert "WHEN NOT MATCHED THEN INSERT" in sql
-
-
-def test_managed_table_merge_bootstrap_checks_catalog_before_reading():
-    class ExplodingSpark:
-        class Catalog:
-            def tableExists(self, table_name):
-                assert table_name == "football_analytics.silver.football_lineups"
-                return False
-
-        catalog = Catalog()
-
-        def table(self, table_name):
-            raise AssertionError("missing managed tables should not be read before bootstrap")
-
-        def sql(self, statement):
-            raise AssertionError("first-run bootstrap should write, not merge")
-
-    class CapturingWriter:
-        def __init__(self):
-            self.saved_table = None
-            self.options = {}
-
-        def format(self, value):
-            assert value == "delta"
-            return self
-
-        def mode(self, value):
-            assert value == "overwrite"
-            return self
-
-        def option(self, key, value):
-            self.options[key] = value
-            return self
-
-        def saveAsTable(self, table_name):
-            self.saved_table = table_name
-
-    class CapturingDataFrame:
-        def __init__(self):
-            self.write = CapturingWriter()
-
-        @property
-        def columns(self):
-            return ["fixture_id", "team_id", "player_id"]
-
-        def createOrReplaceTempView(self, name):
-            raise AssertionError("first-run bootstrap should not create a merge view")
-
-    spark = ExplodingSpark()
-    dataframe = CapturingDataFrame()
-
-    ingestion.merge_dataframe_to_delta_path(
-        spark,
-        dataframe,
-        target_path="football_analytics.silver.football_lineups",
-        keys=("fixture_id", "team_id", "player_id"),
-        temp_view="_silver_lineups_updates",
-    )
-
-    assert dataframe.write.saved_table == "football_analytics.silver.football_lineups"
-    assert dataframe.write.options == {"overwriteSchema": "true"}
-
-
 def test_ingest_fixture_metadata_lands_fixture_id_bronze_payload(monkeypatch):
     captured = {"checkpoints": []}
     payload = {"response": [{"fixture": {"id": 1489437}}]}
@@ -725,7 +599,7 @@ def test_ingest_fixture_metadata_lands_fixture_id_bronze_payload(monkeypatch):
         run_id="run-1",
         target_date="2026-06-25",
         bronze_path="football_analytics.bronze.football_fixtures_raw",
-        checkpoint_table="football_analytics.ops.ingestion_state_checkpoint",
+        checkpoint_table="football_analytics.bronze.ingestion_state_checkpoint",
     )
 
     assert result == payload
@@ -740,18 +614,6 @@ def test_ingest_fixture_metadata_lands_fixture_id_bronze_payload(monkeypatch):
         ingestion.CHECKPOINT_PENDING,
         ingestion.CHECKPOINT_COMPLETED,
     ]
-
-
-def test_accent_translation_map_is_valid_for_pyspark_translate():
-    assert len(ingestion.ACCENTED_CHARS) == len(ingestion.ASCII_CHARS)
-    assert "Á" in ingestion.ACCENTED_CHARS
-    assert "ç" in ingestion.ACCENTED_CHARS
-    assert "ã" in ingestion.ACCENTED_CHARS
-
-
-def test_pyspark_is_loaded_lazily():
-    with pytest.raises(RuntimeError, match="PySpark is required"):
-        ingestion.normalized_name_sql("player_name")
 
 
 def test_fetch_football_api_payload_preserves_full_response_envelope(monkeypatch):

@@ -4,7 +4,6 @@ from football_analytics.quality.validators import (
     ValidationError,
     is_senior_mens_international_fixture,
     validate_senior_mens_international_fixture,
-    validate_world_cup_fixture,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "ValidationError",
     "is_senior_mens_international_fixture",
     "validate_senior_mens_international_fixture",
-    "validate_world_cup_fixture",
 ]

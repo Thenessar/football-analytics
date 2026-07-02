@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 import threading
 import time
@@ -18,28 +18,17 @@ from football_analytics.quality.validators import (
     ValidationError,
     validate_senior_mens_international_fixture,
 )
-from football_analytics.storage.delta_io import build_merge_plan
 
 BRONZE_FOOTBALL_MATCH_RAW_PATH = "/mnt/syndicate/bronze/football_match_raw"
 BRONZE_FIXTURES_RAW_PATH = "/mnt/syndicate/bronze/football_fixtures_raw"
 BRONZE_FIXTURES_ELIGIBILITY_PATH = "/mnt/syndicate/bronze/football_fixture_eligibility"
 BRONZE_PLAYER_STATS_RAW_PATH = BRONZE_FOOTBALL_MATCH_RAW_PATH
 BRONZE_LINEUPS_RAW_PATH = "/mnt/syndicate/bronze/football_lineups_raw"
-SILVER_FIXTURES_PATH = "/mnt/syndicate/silver/football_fixtures"
-SILVER_PLAYER_MATCH_STATS_PATH = "/mnt/syndicate/silver/football_player_match_stats"
-SILVER_LINEUPS_PATH = "/mnt/syndicate/silver/football_lineups"
-GOLD_TEAM_MATCH_CONTEXT_PATH = "/mnt/syndicate/gold/football_team_match_context"
-GOLD_RATING_BASELINE_PATH = "/mnt/syndicate/gold/football_rating_baseline"
-GOLD_PLAYER_SHOT_FEATURES_PATH = "/mnt/syndicate/gold/football_player_shot_features"
-GOLD_PLAYER_SAPM_PATH = "/mnt/syndicate/gold/football_player_sapm"
-INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_state_checkpoint"
-WINDOW_INGESTION_STATE_CHECKPOINT_TABLE = "default.ingestion_window_checkpoint"
-DEAD_LETTER_TABLE = "default.football_ingestion_dead_letter"
+INGESTION_STATE_CHECKPOINT_TABLE = "default.bronze_ingestion_state_checkpoint"
 CHECKPOINT_PENDING = "PENDING"
 CHECKPOINT_COMPLETED = "COMPLETED"
 CHECKPOINT_SKIPPED = "SKIPPED"
 CHECKPOINT_FAILED = "FAILED"
-CHECKPOINT_QUARANTINED = "QUARANTINED"
 COMPLETED_FIXTURE_STATUSES = {"FT", "AET", "PEN"}
 FIXTURES_ENDPOINT = "fixtures"
 PLAYER_STATS_ENDPOINT = "fixtures/players"
@@ -55,16 +44,6 @@ QUOTA_ERROR_TOKENS = (
     "subscription",
     "exceeded",
 )
-
-ACCENTED_CHARS = (
-    "ÀÁÂÃÄÅĀĂĄÇĆČÐĎÈÉÊËĒĔĖĘĚÌÍÎÏĪĮİŁÑŃŇÒÓÔÕÖØŌŐŘŚŞŠÙÚÛÜŪŮŰÝŸŽŹŻ"
-    "àáâãäåāăąçćčðďèéêëēĕėęěìíîïīįıłñńňòóôõöøōőřśşšùúûüūůűýÿžźż"
-)
-ASCII_CHARS = (
-    "AAAAAAAAACCCDDEEEEEEEEEIIIIIIILNNNOOOOOOOORSSSUUUUUUUYYYZZZ"
-    "aaaaaaaaacccddeeeeeeeeeiiiiiilnnnoooooooorsssuuuuuuuyyzzz"
-)
-
 
 def is_delta_table_target(target: str) -> bool:
     """Returns True when a Delta target is a catalog table, not a filesystem path."""
@@ -592,17 +571,6 @@ def _raise_if_quota_response(response) -> None:
         raise FootballApiQuotaError("API-Football HTTP 429: too many requests")
 
 
-def normalized_name_sql(column_name: str):
-    """
-    Builds a PySpark Column that lowercases, accent-folds, strips special
-    characters, collapses whitespace, and trims names for distributed joins.
-    """
-    F, *_ = _require_pyspark()
-    folded = F.translate(F.lower(F.trim(F.col(column_name))), ACCENTED_CHARS, ASCII_CHARS)
-    alphanumeric_spaced = F.regexp_replace(folded, r"[^a-z0-9]+", " ")
-    return F.trim(F.regexp_replace(alphanumeric_spaced, r"\s+", " "))
-
-
 def _football_api_player_stats_schema():
     _, ArrayType, IntegerType, StringType, StructField, StructType = _require_pyspark()
     return StructType([
@@ -971,159 +939,6 @@ def write_lineups_bronze(
     )
 
 
-def quarantine_payload(
-    spark,
-    *,
-    payload: Mapping,
-    reason: str,
-    fixture_id: Optional[int] = None,
-    run_id: Optional[str] = None,
-    endpoint: Optional[str] = None,
-    stage: str = "silver_validate",
-    dead_letter_table: str = DEAD_LETTER_TABLE,
-) -> None:
-    """Writes invalid payloads to a Delta dead-letter table for later inspection."""
-    F, *_ = _require_pyspark()
-    rows = [(
-        run_id,
-        int(fixture_id) if fixture_id is not None else None,
-        endpoint or stage,
-        stage,
-        reason,
-        json.dumps(payload, ensure_ascii=False),
-        payload_hash(payload),
-    )]
-    (
-        spark.createDataFrame(
-            rows,
-            (
-                "run_id string, fixture_id int, endpoint string, stage string, reason string, "
-                "raw_payload string, response_hash string"
-            ),
-        )
-        .withColumn("quarantined_at_utc", F.current_timestamp())
-        .write
-        .format("delta")
-        .mode("append")
-        .saveAsTable(dead_letter_table)
-    )
-
-
-def validate_or_quarantine_fixture(
-    spark,
-    fixture: Mapping,
-    *,
-    dead_letter_table: str = DEAD_LETTER_TABLE,
-) -> bool:
-    """Returns True for eligible senior men's international fixtures."""
-    try:
-        validate_senior_mens_international_fixture(fixture)
-        return True
-    except ValidationError as error:
-        quarantine_payload(
-            spark,
-            payload=fixture,
-            reason=str(error),
-            fixture_id=(fixture.get("fixture") or {}).get("id"),
-            stage="fixture_validation",
-            dead_letter_table=dead_letter_table,
-        )
-        return False
-
-
-def natural_key_merge_plans() -> dict[str, object]:
-    """Documents deterministic Delta MERGE keys used by Databricks tasks."""
-    return {
-        "fixtures": build_merge_plan(
-            "silver.fixtures",
-            ("fixture_id",),
-            (
-                "fixture_id",
-                "fixture_date_utc",
-                "league_id",
-                "league_name",
-                "league_season",
-                "status_short",
-                "response_hash",
-                "updated_at_utc",
-            ),
-        ),
-        "player_stats": build_merge_plan(
-            "silver.player_stats",
-            ("fixture_id", "team_id", "player_id"),
-            (
-                "fixture_id",
-                "team_id",
-                "player_id",
-                "games_minutes",
-                "games_position",
-                "shots_total",
-                "shots_on",
-                "goals_total",
-                "response_hash",
-                "updated_at_utc",
-            ),
-        ),
-        "lineups": build_merge_plan(
-            "silver.lineups",
-            ("fixture_id", "team_id", "player_id"),
-            (
-                "fixture_id",
-                "team_id",
-                "player_id",
-                "player_name",
-                "position",
-                "number",
-                "is_starting",
-                "formation",
-                "response_hash",
-                "updated_at_utc",
-            ),
-        ),
-    }
-
-
-def build_delta_merge_sql(target: str, source_view: str, keys: Sequence[str], columns: Sequence[str]) -> str:
-    if not keys:
-        raise ValueError("At least one merge key is required")
-    if not columns:
-        raise ValueError("At least one merge column is required")
-    predicate = " AND ".join(f"target.{key} <=> source.{key}" for key in keys)
-    update_columns = [column for column in columns if column not in set(keys)]
-    update_clause = ",\n            ".join(
-        f"{column} = source.{column}" for column in update_columns
-    ) or f"{keys[0]} = source.{keys[0]}"
-    insert_columns = ", ".join(columns)
-    insert_values = ", ".join(f"source.{column}" for column in columns)
-    return f"""
-        MERGE INTO {target} AS target
-        USING {source_view} AS source
-        ON {predicate}
-        WHEN MATCHED THEN UPDATE SET
-            {update_clause}
-        WHEN NOT MATCHED THEN INSERT ({insert_columns})
-        VALUES ({insert_values})
-    """
-
-
-def merge_dataframe_to_delta_path(
-    spark,
-    dataframe,
-    *,
-    target_path: str,
-    keys: Sequence[str],
-    temp_view: str,
-) -> None:
-    """Upserts a DataFrame into a Delta path or catalog table, bootstrapping on first run."""
-    if not delta_target_exists(spark, target_path):
-        write_delta_target(dataframe, target_path, mode="overwrite", overwrite_schema=True)
-        return
-
-    dataframe.createOrReplaceTempView(temp_view)
-    target = target_path if is_delta_table_target(target_path) else f"delta.`{target_path}`"
-    spark.sql(build_delta_merge_sql(target, temp_view, keys, tuple(dataframe.columns)))
-
-
 def fetch_football_api_payload(
     endpoint: str,
     params: Mapping,
@@ -1191,21 +1006,6 @@ def fetch_international_fixtures_for_date(
         api_key=api_key,
         completed_only=completed_only,
         allowed_league_ids=allowed_league_ids,
-    )
-
-
-def fetch_world_cup_fixtures_for_date(
-    match_date: str,
-    *,
-    api_key: Optional[str] = None,
-    completed_only: bool = True,
-) -> list[Mapping]:
-    """Legacy compatibility wrapper for World Cup-only callers."""
-    return fetch_senior_mens_international_fixtures_for_date(
-        match_date,
-        api_key=api_key,
-        completed_only=completed_only,
-        allowed_league_ids={1},
     )
 
 
@@ -1869,78 +1669,6 @@ def ingest_senior_mens_international_player_stats_bronze(
     )
 
 
-def ingest_world_cup_player_stats_bronze(
-    spark,
-    *,
-    api_key: Optional[str] = None,
-    target_date: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    completed_only: bool = True,
-    bronze_path: str = BRONZE_FOOTBALL_MATCH_RAW_PATH,
-) -> BronzeIngestionSummary:
-    """Legacy compatibility wrapper for the senior men's international Bronze loader."""
-    return ingest_senior_mens_international_player_stats_bronze(
-        spark,
-        api_key=api_key,
-        target_date=target_date,
-        date_from=date_from,
-        date_to=date_to,
-        completed_only=completed_only,
-        bronze_path=bronze_path,
-    )
-
-
-def ensure_ingestion_checkpoint_table(
-    spark,
-    *,
-    checkpoint_table: str = WINDOW_INGESTION_STATE_CHECKPOINT_TABLE,
-) -> None:
-    """Creates the lightweight Delta checkpoint table if it is missing."""
-    spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {checkpoint_table} (
-            window_start_date DATE,
-            window_end_date DATE,
-            status STRING,
-            updated_timestamp TIMESTAMP,
-            records_ingested INT
-        )
-        USING DELTA
-    """)
-
-
-def seed_ingestion_checkpoint_windows(
-    spark,
-    windows: Iterable[tuple[str, str]],
-    *,
-    checkpoint_table: str = WINDOW_INGESTION_STATE_CHECKPOINT_TABLE,
-) -> None:
-    """Adds PENDING checkpoint rows for windows not already tracked."""
-    ensure_ingestion_checkpoint_table(spark, checkpoint_table=checkpoint_table)
-    rows = [(start, end, CHECKPOINT_PENDING, 0) for start, end in windows]
-    if not rows:
-        return
-
-    F, *_ = _require_pyspark()
-    staged = (
-        spark.createDataFrame(
-            rows,
-            "window_start_date string, window_end_date string, status string, records_ingested int",
-        )
-        .withColumn("window_start_date", F.to_date("window_start_date"))
-        .withColumn("window_end_date", F.to_date("window_end_date"))
-        .withColumn("updated_timestamp", F.current_timestamp())
-    )
-    staged.createOrReplaceTempView("_pending_ingestion_windows")
-    spark.sql(f"""
-        MERGE INTO {checkpoint_table} AS target
-        USING _pending_ingestion_windows AS source
-        ON target.window_start_date = source.window_start_date
-           AND target.window_end_date = source.window_end_date
-        WHEN NOT MATCHED THEN INSERT *
-    """)
-
-
 def ensure_fixture_endpoint_checkpoint_table(
     spark,
     *,
@@ -2112,37 +1840,3 @@ def latest_completed_checkpoint_date(
     return str(value)
 
 
-def update_ingestion_checkpoint(
-    spark,
-    window_start_date: str,
-    window_end_date: str,
-    *,
-    status: str,
-    records_ingested: int,
-    checkpoint_table: str = WINDOW_INGESTION_STATE_CHECKPOINT_TABLE,
-) -> None:
-    """Atomically upserts one checkpoint row after its data commit succeeds."""
-    ensure_ingestion_checkpoint_table(spark, checkpoint_table=checkpoint_table)
-    row = [(window_start_date, window_end_date, status, int(records_ingested))]
-    F, *_ = _require_pyspark()
-    staged = (
-        spark.createDataFrame(
-            row,
-            "window_start_date string, window_end_date string, status string, records_ingested int",
-        )
-        .withColumn("window_start_date", F.to_date("window_start_date"))
-        .withColumn("window_end_date", F.to_date("window_end_date"))
-        .withColumn("updated_timestamp", F.current_timestamp())
-    )
-    staged.createOrReplaceTempView("_ingestion_checkpoint_update")
-    spark.sql(f"""
-        MERGE INTO {checkpoint_table} AS target
-        USING _ingestion_checkpoint_update AS source
-        ON target.window_start_date = source.window_start_date
-           AND target.window_end_date = source.window_end_date
-        WHEN MATCHED THEN UPDATE SET
-            status = source.status,
-            updated_timestamp = source.updated_timestamp,
-            records_ingested = source.records_ingested
-        WHEN NOT MATCHED THEN INSERT *
-    """)

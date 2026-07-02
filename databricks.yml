@@ -25,9 +25,6 @@ variables:
   gold_schema:
     description: Unity Catalog schema for Gold feature tables.
     default: gold
-  ops_schema:
-    description: Unity Catalog schema for audit, checkpoint, and dead-letter tables.
-    default: ops
   fixture_id:
     description: Optional API-Sports fixture ID for one-fixture manual runs.
     default: ""
@@ -62,7 +59,6 @@ targets:
       bronze_schema: bronze_dev
       silver_schema: silver_dev
       gold_schema: gold_dev
-      ops_schema: ops_dev
       schedule_pause_status: PAUSED
 
   prod:
@@ -74,5 +70,4 @@ targets:
       bronze_schema: bronze
       silver_schema: silver
       gold_schema: gold
-      ops_schema: ops
       schedule_pause_status: PAUSED

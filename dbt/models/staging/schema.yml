@@ -21,6 +21,12 @@ models:
       - name: status_short
         tests:
           - not_null
+      - name: league_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('senior_mens_international_leagues')
+                field: league_id
 
   - name: stg_football_player_match_stats
     description: Silver player-match statistics parsed from raw API-Football player envelopes.

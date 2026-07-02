@@ -1,0 +1,13 @@
+version: 2
+
+seeds:
+  - name: senior_mens_international_leagues
+    description: Canonical senior men's international league allowlist shared with Python ingestion.
+    columns:
+      - name: league_id
+        tests:
+          - unique
+          - not_null
+      - name: league_name
+        tests:
+          - not_null

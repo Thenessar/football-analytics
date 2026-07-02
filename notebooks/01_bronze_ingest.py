@@ -22,7 +22,6 @@ dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
 dbutils.widgets.text("silver_schema", "silver")
 dbutils.widgets.text("gold_schema", "gold")
-dbutils.widgets.text("ops_schema", "ops")
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.dropdown("include_lineups", "true", ["true", "false"])
 dbutils.widgets.text("endpoint_max_workers", "8")
@@ -45,7 +44,6 @@ config = DatabricksPipelineConfig(
     bronze_schema=dbutils.widgets.get("bronze_schema"),
     silver_schema=dbutils.widgets.get("silver_schema"),
     gold_schema=dbutils.widgets.get("gold_schema"),
-    ops_schema=dbutils.widgets.get("ops_schema"),
     api_key=env_config.api_key,
 )
 fixture_id = dbutils.widgets.get("fixture_id").strip()
@@ -82,7 +80,7 @@ if fixture_id:
         run_id=run_id,
         target_date=target_date or None,
         bronze_path=table_name(config, "bronze", "football_fixtures_raw"),
-        checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+        checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
         logger=logger,
     )
     player_summary = ingest_player_stats_for_fixtures_to_bronze(
@@ -93,7 +91,7 @@ if fixture_id:
         run_id=run_id,
         target_date=target_date or None,
         force_refresh=force_refresh,
-        checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+        checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
         logger=logger,
         endpoint_max_workers=endpoint_max_workers,
         api_rate_limit_per_minute=api_rate_limit_per_minute,
@@ -108,7 +106,7 @@ if fixture_id:
             run_id=run_id,
             target_date=target_date or None,
             force_refresh=force_refresh,
-            checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+            checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
             logger=logger,
             endpoint_max_workers=endpoint_max_workers,
             api_rate_limit_per_minute=api_rate_limit_per_minute,
@@ -134,7 +132,7 @@ else:
         bronze_eligibility_path=table_name(config, "bronze", "football_fixture_eligibility"),
         bronze_player_stats_path=table_name(config, "bronze", "football_match_raw"),
         bronze_lineups_path=table_name(config, "bronze", "football_lineups_raw"),
-        checkpoint_table=table_name(config, "ops", "ingestion_state_checkpoint"),
+        checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
         logger=logger,
         endpoint_max_workers=endpoint_max_workers,
         api_rate_limit_per_minute=api_rate_limit_per_minute,

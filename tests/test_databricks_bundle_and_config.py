@@ -1,10 +1,12 @@
 from pathlib import Path
 import re
+import csv
 
 import pytest
 
 from football_analytics.databricks.config import DatabricksPipelineConfig, load_config_from_env
 from football_analytics.databricks.tables import table_name
+from football_analytics.league_scope import SENIOR_MENS_INTERNATIONAL_LEAGUES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +18,6 @@ def test_databricks_config_defaults_are_medallion_oriented(monkeypatch):
         "FOOTBALL_BRONZE_SCHEMA",
         "FOOTBALL_SILVER_SCHEMA",
         "FOOTBALL_GOLD_SCHEMA",
-        "FOOTBALL_OPS_SCHEMA",
         "FOOTBALL_LEAGUE_ID",
         "FOOTBALL_SEASON",
     ):
@@ -38,7 +39,6 @@ def test_databricks_table_names_use_layer_schemas():
     assert table_name(config, "bronze", "raw_fixture_payloads") == "fa.b.raw_fixture_payloads"
     assert table_name(config, "silver", "fixtures") == "fa.s.fixtures"
     assert table_name(config, "gold", "player_sapm") == "fa.g.player_sapm"
-    assert table_name(config, "ops", "audit") == "fa.ops.audit"
     with pytest.raises(ValueError, match="Unsupported medallion layer"):
         table_name(config, "platinum", "x")
 
@@ -46,7 +46,7 @@ def test_databricks_table_names_use_layer_schemas():
 def test_bundle_passes_catalog_schema_parameters_to_table_aware_tasks():
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
 
-    for task_name in ("prepare_run", "bronze_ingest", "quality_checks"):
+    for task_name in ("prepare_run", "bronze_ingest"):
         match = re.search(
             rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
             bundle,
@@ -54,7 +54,7 @@ def test_bundle_passes_catalog_schema_parameters_to_table_aware_tasks():
         )
         assert match is not None
         task_block = match.group("task")
-        for parameter in ("catalog", "bronze_schema", "silver_schema", "gold_schema", "ops_schema"):
+        for parameter in ("catalog", "bronze_schema", "silver_schema", "gold_schema"):
             assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 def test_bundle_runs_dbt_after_bronze_ingestion():
@@ -86,11 +86,7 @@ def test_bundle_runs_dbt_after_bronze_ingestion():
         assert "schema: ${var.silver_schema}" in task_block
         assert "catalog: \"{{job.parameters.catalog}}\"" not in task_block
         assert "schema: \"{{job.parameters.silver_schema}}\"" not in task_block
-    assert "task_key: dbt_build" in re.search(
-        r"- task_key: quality_checks\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
-        bundle,
-        flags=re.S,
-    ).group("task")
+    assert "task_key: quality_checks" not in bundle
 
 
 def test_bundle_passes_parallelism_parameters_to_bronze_ingest():
@@ -118,7 +114,7 @@ def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
     assert "environment_key: notebook_serverless" in job
     assert "${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl" in job
 
-    for task_name in ("prepare_run", "bronze_ingest", "quality_checks"):
+    for task_name in ("prepare_run", "bronze_ingest"):
         match = re.search(
             rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
             job,
@@ -142,7 +138,6 @@ def test_databricks_notebook_files_match_medallion_order():
     assert notebook_names == [
         "00_prepare_run.py",
         "01_bronze_ingest.py",
-        "04_quality_checks.py",
     ]
 
 
@@ -153,7 +148,6 @@ def test_bundle_references_renamed_notebooks_and_job():
         "international_medallion_pipeline",
         "../notebooks/00_prepare_run.py",
         "../notebooks/01_bronze_ingest.py",
-        "../notebooks/04_quality_checks.py",
     ):
         assert expected in bundle
 
@@ -165,8 +159,10 @@ def test_bundle_references_renamed_notebooks_and_job():
         "02_silver_validate_normalize.py",
         "03_gold_feature_build.py",
         "04_pipeline_quality_checks.py",
+        "04_quality_checks.py",
         "../notebooks/02_silver_normalize.py",
         "../notebooks/03_gold_build.py",
+        "../notebooks/04_quality_checks.py",
         "existing_cluster_id",
         "league_id",
         "season",
@@ -191,6 +187,7 @@ def test_dbt_project_contains_expected_models_and_seed():
         "models/marts/football_rating_baseline.sql",
         "models/marts/football_player_shot_features.sql",
         "models/marts/football_player_sapm.sql",
+        "seeds/senior_mens_international_leagues.csv",
         "seeds/fifa_mens_world_ranking_december_2022.csv",
     ):
         assert (dbt_root / expected).exists()
@@ -203,8 +200,21 @@ def test_dbt_project_contains_expected_models_and_seed():
         "ref('stg_football_fixtures')",
         "ref('stg_football_player_match_stats')",
         "ref('football_team_match_context')",
+        "ref('senior_mens_international_leagues')",
     ):
         assert expected_ref in model_sql
+
+
+def test_dbt_league_seed_matches_python_source_of_truth():
+    seed_path = ROOT / "dbt" / "seeds" / "senior_mens_international_leagues.csv"
+
+    with seed_path.open(encoding="utf-8", newline="") as handle:
+        rows = [
+            (int(row["league_id"]), row["league_name"])
+            for row in csv.DictReader(handle)
+        ]
+
+    assert rows == list(SENIOR_MENS_INTERNATIONAL_LEAGUES)
 
 
 def test_current_databricks_docs_do_not_describe_pipeline_as_world_cup_only():
@@ -218,7 +228,6 @@ def test_current_databricks_docs_do_not_describe_pipeline_as_world_cup_only():
         "dbt deps",
         "dbt seed",
         "dbt build",
-        "04_quality_checks.py",
     ):
         assert flow_step in docs
 

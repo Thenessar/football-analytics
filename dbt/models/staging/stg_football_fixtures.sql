@@ -47,9 +47,21 @@ typed as (
     where fixture_entry.fixture.id is not null
 ),
 
+allowed_leagues as (
+    select cast(league_id as int) as league_id
+    from {{ ref('senior_mens_international_leagues') }}
+),
+
+filtered as (
+    select typed.*
+    from typed
+    inner join allowed_leagues
+        on typed.league_id = allowed_leagues.league_id
+),
+
 deduped as (
     select *
-    from typed
+    from filtered
     qualify row_number() over (partition by fixture_id order by updated_at_utc desc) = 1
 )
 
