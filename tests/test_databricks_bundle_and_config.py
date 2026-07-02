@@ -103,7 +103,7 @@ def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
     assert "python -m pip wheel . --wheel-dir dist --no-deps" in bundle_config
     assert "path: ." in bundle_config
     assert "environment_key: notebook_serverless" in job
-    assert "${workspace.root_path}/files/dist/football_analytics-0.1.0-py3-none-any.whl" in job
+    assert "${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl" in job
 
     for task_name in ("prepare_run", "bronze_ingest", "quality_checks"):
         match = re.search(

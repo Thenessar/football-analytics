@@ -134,7 +134,7 @@ resources:
           spec:
             environment_version: ${var.serverless_environment_version}
             dependencies:
-              - ${workspace.root_path}/files/dist/football_analytics-0.1.0-py3-none-any.whl
+              - ${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl
         - environment_key: dbt_serverless
           spec:
             environment_version: ${var.serverless_environment_version}
