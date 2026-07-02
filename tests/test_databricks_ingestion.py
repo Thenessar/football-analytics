@@ -31,19 +31,37 @@ def test_weekly_windows_default_to_post_2022_world_cup_anchor():
     ]
 
 
-def test_fifa_rankings_seed_file_is_versioned_with_expected_source_columns():
-    seed_path = "data/seeds/fifa_mens_world_ranking_december_2022.csv"
-    with open(seed_path, "r", encoding="utf-8") as seed_file:
-        assert seed_file.readline().strip() == "Rank,Team,Raiting"
-        assert seed_file.readline().strip().startswith("1,Brazil,")
-
-
 def test_daily_dates_are_inclusive():
     assert ingestion.iter_daily_dates("2026-06-25", "2026-06-27") == [
         "2026-06-25",
         "2026-06-26",
         "2026-06-27",
     ]
+
+
+def test_default_ingestion_dates_use_last_checkpoint_through_today(monkeypatch):
+    monkeypatch.setattr(
+        ingestion,
+        "latest_completed_checkpoint_date",
+        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE: "2026-06-25",
+    )
+
+    selection = ingestion.resolve_ingestion_dates(object(), today="2026-06-27")
+
+    assert selection.dates == ("2026-06-25", "2026-06-26", "2026-06-27")
+    assert selection.mode == "checkpoint_to_today"
+
+
+def test_default_ingestion_dates_fall_back_to_today_without_checkpoint(monkeypatch):
+    monkeypatch.setattr(
+        ingestion,
+        "latest_completed_checkpoint_date",
+        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE: None,
+    )
+
+    selection = ingestion.resolve_ingestion_dates(None, today="2026-06-27")
+
+    assert selection.dates == ("2026-06-27",)
 
 
 def test_date_scope_log_fields_use_single_date_or_range():
@@ -447,6 +465,60 @@ def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypa
     assert summary.eligible_fixtures == 1
 
 
+def test_medallion_bronze_keeps_scheduled_fixture_and_skips_missing_lineups(monkeypatch):
+    discovery_kwargs = {}
+    discovery = ingestion.FixtureDiscoveryResult(
+        target_date="2026-06-25",
+        raw_payload={"response": [{"fixture": {"id": 100, "status": {"short": "NS"}}}]},
+        eligible_fixtures=({"fixture": {"id": 100, "status": {"short": "NS"}}},),
+        skipped_fixtures=(),
+    )
+
+    def fake_discover(spark, match_date, **kwargs):
+        discovery_kwargs.update(kwargs)
+        return discovery
+
+    monkeypatch.setattr(ingestion, "discover_senior_mens_fixtures_for_date", fake_discover)
+    monkeypatch.setattr(
+        ingestion,
+        "ingest_player_stats_for_fixtures_to_bronze",
+        lambda spark, fixture_ids, **kwargs: ingestion.BronzeIngestionSummary(
+            requested_dates=(),
+            discovered_fixtures=len(fixture_ids),
+            ingested_fixtures=len(fixture_ids),
+            skipped_fixtures=0,
+            failed_fixtures=0,
+            fixture_ids=tuple(fixture_ids),
+            player_stat_payloads_ingested=len(fixture_ids),
+        ),
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "ingest_lineups_for_fixtures_to_bronze",
+        lambda spark, fixture_ids, **kwargs: ingestion.BronzeIngestionSummary(
+            requested_dates=(),
+            discovered_fixtures=len(fixture_ids),
+            ingested_fixtures=0,
+            skipped_fixtures=len(fixture_ids),
+            failed_fixtures=0,
+            fixture_ids=(),
+            eligible_fixtures=len(fixture_ids),
+            lineups_ingested=0,
+            lineups_skipped=len(fixture_ids),
+        ),
+    )
+
+    summary = ingestion.ingest_senior_mens_international_bronze(
+        spark=None,
+        target_date="2026-06-25",
+    )
+
+    assert discovery_kwargs["completed_only"] is False
+    assert summary.fixture_ids == (100,)
+    assert summary.lineups_skipped == 1
+    assert summary.failed_fixtures == 0
+
+
 def test_medallion_bronze_logs_single_date_or_date_range(monkeypatch):
     log_records = []
 
@@ -617,65 +689,6 @@ def test_managed_table_merge_bootstrap_checks_catalog_before_reading():
 
     assert dataframe.write.saved_table == "football_analytics.silver.football_lineups"
     assert dataframe.write.options == {"overwriteSchema": "true"}
-
-
-def test_fifa_seed_rows_are_typed_and_rating_typo_is_normalized():
-    rows = ingestion.read_fifa_rankings_seed_rows()
-
-    assert rows[0]["rank"] == 1
-    assert rows[0]["team_name"] == "Brazil"
-    assert isinstance(rows[0]["rating"], float)
-    assert rows[0]["ranking_as_of_date"] == "2022-12-22"
-
-
-def test_fifa_seed_table_writer_uses_python_rows_not_spark_csv():
-    class ExplodingSparkReader:
-        def option(self, *args, **kwargs):
-            raise AssertionError("seed writer should not call spark.read.csv")
-
-    class CapturingWriter:
-        def __init__(self):
-            self.saved_table = None
-
-        def format(self, value):
-            assert value == "delta"
-            return self
-
-        def mode(self, value):
-            assert value == "overwrite"
-            return self
-
-        def option(self, key, value):
-            assert (key, value) == ("overwriteSchema", "true")
-            return self
-
-        def saveAsTable(self, table_name):
-            self.saved_table = table_name
-
-    class CapturingDataFrame:
-        def __init__(self, rows):
-            self.rows = rows
-            self.write = CapturingWriter()
-
-    class CapturingSpark:
-        read = ExplodingSparkReader()
-
-        def __init__(self):
-            self.created = None
-            self.schema = None
-
-        def createDataFrame(self, rows, schema):
-            self.created = CapturingDataFrame(rows)
-            self.schema = schema
-            return self.created
-
-    spark = CapturingSpark()
-
-    seed_df = ingestion.write_fifa_rankings_seed_table(spark, table_name="default.seed_test")
-
-    assert seed_df.write.saved_table == "default.seed_test"
-    assert spark.schema == "rank int, team_name string, rating double, ranking_as_of_date date"
-    assert spark.created.rows[0]["team_name"] == "Brazil"
 
 
 def test_ingest_fixture_metadata_lands_fixture_id_bronze_payload(monkeypatch):

@@ -37,7 +37,8 @@ The bundle builds the local `football_analytics` package as a wheel during deplo
 If you authenticated with a named profile, add `-p <profile-name>` to each command.
 
 For a one-fixture manual run, pass the fixture as a job parameter in Databricks or set `fixture_id`.
-For a daily load, leave `fixture_id` blank and set `target_date`.
+For the default incremental load, leave `fixture_id`, `target_date`, `date_from`, and `date_to` blank; the job starts at the latest completed checkpoint date and runs through today.
+Set `target_date` to force one calendar date.
 For a backfill, leave `fixture_id` blank and set `date_from` plus `date_to`.
 
 ## Execution flow
@@ -53,7 +54,7 @@ dbt build
 04_quality_checks.py
 ```
 
-`00_prepare_run.py` creates the target schemas and can still materialize the legacy Python seed table. `01_bronze_ingest.py` only lands raw API-Football payloads and checkpoint state in Bronze/Ops. Silver staging models and Gold mart models live under `dbt/models`.
+`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze/Ops. `dbt seed` is the only seed materialization step. Silver staging models and Gold mart models live under `dbt/models`.
 
 The bundled workflow is configured for Free Edition/serverless-style execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment.
 The dbt task environment defaults to serverless environment version `4`; override `serverless_environment_version` if your workspace requires a different supported version.
@@ -69,11 +70,9 @@ force_refresh
 include_lineups
 endpoint_max_workers
 api_rate_limit_per_minute
-load_rankings_seed
 ```
 
-The FIFA men's ranking seed is versioned at `data/seeds/fifa_mens_world_ranking_december_2022.csv`.
-The dbt copy is versioned at `dbt/seeds/fifa_mens_world_ranking_december_2022.csv`; `football_rating_baseline` normalizes the source `Raiting` typo to `rating`.
+The FIFA men's ranking seed is versioned at `dbt/seeds/fifa_mens_world_ranking_december_2022.csv`; `football_rating_baseline` normalizes the source `Raiting` typo to `rating`.
 
 The schedule is paused by default. Set `schedule_pause_status=UNPAUSED` only when the job is ready to run automatically.
 
