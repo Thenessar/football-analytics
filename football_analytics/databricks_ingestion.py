@@ -30,6 +30,13 @@ CHECKPOINT_COMPLETED = "COMPLETED"
 CHECKPOINT_SKIPPED = "SKIPPED"
 CHECKPOINT_FAILED = "FAILED"
 COMPLETED_FIXTURE_STATUSES = {"FT", "AET", "PEN"}
+LIVE_FIXTURE_STATUSES = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT"}
+TERMINAL_UNPLAYED_FIXTURE_STATUSES = {"PST", "CANC", "ABD", "AWD", "WO"}
+FIXTURE_STATE_SCHEDULED = "SCHEDULED"
+FIXTURE_STATE_LINEUPS_CONFIRMED = "LINEUPS_CONFIRMED"
+FIXTURE_STATE_LIVE = "LIVE"
+FIXTURE_STATE_COMPLETED = "COMPLETED"
+DEFAULT_LOOKAHEAD_DAYS = 7
 FIXTURES_ENDPOINT = "fixtures"
 PLAYER_STATS_ENDPOINT = "fixtures/players"
 LINEUPS_ENDPOINT = "fixtures/lineups"
@@ -151,8 +158,9 @@ def resolve_ingestion_dates(
     date_to: Optional[str] = None,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
     today: Optional[str] = None,
+    lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
 ) -> IngestionDateSelection:
-    """Resolves manual date overrides or the default checkpoint-to-today range."""
+    """Resolves manual date overrides or the default checkpoint-to-lookahead range."""
     if target_date:
         return IngestionDateSelection((target_date,), "target_date")
     if date_from or date_to:
@@ -160,16 +168,19 @@ def resolve_ingestion_dates(
             raise ValueError("Provide both date_from and date_to, or neither")
         return IngestionDateSelection(tuple(iter_daily_dates(date_from, date_to)), "date_range")
 
-    end_date = today or date.today().isoformat()
+    today_date = date.fromisoformat(today) if today else date.today()
+    lookahead_days = max(0, int(lookahead_days))
+    end_date = (today_date + timedelta(days=lookahead_days)).isoformat()
     start_date = latest_completed_checkpoint_date(
         spark,
         checkpoint_table=checkpoint_table,
-    ) or end_date
+        max_target_date=today_date.isoformat(),
+    ) or today_date.isoformat()
     if date.fromisoformat(start_date) > date.fromisoformat(end_date):
         start_date = end_date
     return IngestionDateSelection(
         tuple(iter_daily_dates(start_date, end_date)),
-        "checkpoint_to_today",
+        "checkpoint_to_lookahead",
         defaulted_from_checkpoint=True,
     )
 
@@ -258,6 +269,75 @@ class ApiRateLimiter:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def fixture_status_short(fixture: Mapping) -> Optional[str]:
+    status = ((fixture.get("fixture") or {}).get("status") or {}).get("short")
+    return str(status).upper() if status else None
+
+
+def lineups_payload_has_confirmed_starting_xi(payload: Optional[Mapping]) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    response = payload.get("response")
+    if not isinstance(response, list) or len(response) < 2:
+        return False
+    confirmed_teams = 0
+    for team_lineup in response:
+        start_xi = team_lineup.get("startXI") if isinstance(team_lineup, Mapping) else None
+        if isinstance(start_xi, list) and len(start_xi) >= 11:
+            confirmed_teams += 1
+    return confirmed_teams >= 2
+
+
+def player_stats_payload_has_match_data(payload: Optional[Mapping]) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    response = payload.get("response")
+    if not isinstance(response, list) or len(response) < 2:
+        return False
+    return any(bool(team.get("players")) for team in response if isinstance(team, Mapping))
+
+
+def classify_fixture_business_state(
+    fixture: Mapping,
+    *,
+    lineups_payload: Optional[Mapping] = None,
+    player_stats_payload: Optional[Mapping] = None,
+) -> str:
+    """Maps provider status and endpoint payloads to the business fixture lifecycle."""
+    status = fixture_status_short(fixture)
+    if status in COMPLETED_FIXTURE_STATUSES and player_stats_payload_has_match_data(player_stats_payload):
+        return FIXTURE_STATE_COMPLETED
+    if status in LIVE_FIXTURE_STATUSES:
+        return FIXTURE_STATE_LIVE
+    if lineups_payload_has_confirmed_starting_xi(lineups_payload):
+        return FIXTURE_STATE_LINEUPS_CONFIRMED
+    if status in COMPLETED_FIXTURE_STATUSES:
+        return FIXTURE_STATE_LIVE
+    return FIXTURE_STATE_SCHEDULED
+
+
+def fixture_ids_for_player_stats(fixtures: Iterable[Mapping]) -> tuple[int, ...]:
+    fixture_ids = []
+    for fixture in fixtures:
+        status = fixture_status_short(fixture)
+        if status in COMPLETED_FIXTURE_STATUSES or status in LIVE_FIXTURE_STATUSES:
+            fixture_id = (fixture.get("fixture") or {}).get("id")
+            if fixture_id is not None:
+                fixture_ids.append(int(fixture_id))
+    return tuple(dict.fromkeys(fixture_ids))
+
+
+def fixture_ids_for_lineups(fixtures: Iterable[Mapping]) -> tuple[int, ...]:
+    fixture_ids = []
+    for fixture in fixtures:
+        status = fixture_status_short(fixture)
+        if status not in TERMINAL_UNPLAYED_FIXTURE_STATUSES:
+            fixture_id = (fixture.get("fixture") or {}).get("id")
+            if fixture_id is not None:
+                fixture_ids.append(int(fixture_id))
+    return tuple(dict.fromkeys(fixture_ids))
 
 
 def endpoint_ingestion_plan(
@@ -1490,6 +1570,7 @@ def ingest_senior_mens_international_bronze(
     completed_only: bool = False,
     force_refresh: bool = False,
     include_lineups: bool = True,
+    lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
     required_fixture_ids: Optional[Iterable[int]] = None,
     bronze_fixtures_path: str = BRONZE_FIXTURES_RAW_PATH,
     bronze_eligibility_path: str = BRONZE_FIXTURES_ELIGIBILITY_PATH,
@@ -1507,6 +1588,7 @@ def ingest_senior_mens_international_bronze(
         date_from=date_from,
         date_to=date_to,
         checkpoint_table=checkpoint_table,
+        lookahead_days=lookahead_days,
     )
     dates = list(date_selection.dates)
 
@@ -1546,11 +1628,13 @@ def ingest_senior_mens_international_bronze(
         discovered_count += len(discovery.raw_payload.get("response", []))
         skipped_fixture_count += len(discovery.skipped_fixtures)
         fixture_ids = discovery.eligible_fixture_ids
+        player_stat_fixture_ids = fixture_ids_for_player_stats(discovery.eligible_fixtures)
+        lineup_fixture_ids = fixture_ids_for_lineups(discovery.eligible_fixtures)
         all_fixture_ids.extend(fixture_ids)
 
         player_summary = ingest_player_stats_for_fixtures_to_bronze(
             spark,
-            fixture_ids,
+            player_stat_fixture_ids,
             api_key=api_key,
             run_id=active_run_id,
             target_date=match_date,
@@ -1568,7 +1652,7 @@ def ingest_senior_mens_international_bronze(
         if include_lineups:
             lineup_summary = ingest_lineups_for_fixtures_to_bronze(
                 spark,
-                fixture_ids,
+                lineup_fixture_ids,
                 api_key=api_key,
                 run_id=active_run_id,
                 target_date=match_date,
@@ -1812,6 +1896,7 @@ def latest_completed_checkpoint_date(
     *,
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
     endpoints: Sequence[str] = (FIXTURES_ENDPOINT, PLAYER_STATS_ENDPOINT, LINEUPS_ENDPOINT),
+    max_target_date: Optional[str] = None,
 ) -> Optional[str]:
     """Returns the latest completed target date recorded by endpoint checkpoints."""
     if spark is None or not hasattr(spark, "table"):
@@ -1827,6 +1912,8 @@ def latest_completed_checkpoint_date(
         & F.col("target_date").isNotNull()
         & F.col("endpoint").isin([str(endpoint) for endpoint in endpoints])
     )
+    if max_target_date:
+        filtered = filtered.where(F.col("target_date") <= F.to_date(F.lit(max_target_date)))
     rows = filtered.agg(F.max("target_date").alias("target_date")).collect()
     if not rows:
         return None

@@ -10,6 +10,7 @@ from football_analytics.databricks_ingestion import (
     ingest_lineups_for_fixtures_to_bronze,
     ingest_player_stats_for_fixtures_to_bronze,
     ingest_senior_mens_international_bronze,
+    DEFAULT_LOOKAHEAD_DAYS,
     utc_now_iso,
 )
 
@@ -17,6 +18,7 @@ dbutils.widgets.text("fixture_id", "")
 dbutils.widgets.text("target_date", "")
 dbutils.widgets.text("date_from", "")
 dbutils.widgets.text("date_to", "")
+dbutils.widgets.text("lookahead_days", str(DEFAULT_LOOKAHEAD_DAYS))
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
@@ -50,6 +52,7 @@ fixture_id = dbutils.widgets.get("fixture_id").strip()
 target_date = dbutils.widgets.get("target_date").strip()
 date_from = dbutils.widgets.get("date_from").strip()
 date_to = dbutils.widgets.get("date_to").strip()
+lookahead_days = positive_int_widget("lookahead_days", DEFAULT_LOOKAHEAD_DAYS, maximum=30)
 run_id = dbutils.widgets.get("run_id").strip() or f"intl-{utc_now_iso()}"
 force_refresh = dbutils.widgets.get("force_refresh").strip().lower() == "true"
 include_lineups = dbutils.widgets.get("include_lineups").strip().lower() == "true"
@@ -126,6 +129,7 @@ else:
         target_date=target_date or None,
         date_from=date_from or None,
         date_to=date_to or None,
+        lookahead_days=lookahead_days,
         force_refresh=force_refresh,
         include_lineups=include_lineups,
         bronze_fixtures_path=table_name(config, "bronze", "football_fixtures_raw"),

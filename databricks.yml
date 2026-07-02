@@ -31,6 +31,9 @@ variables:
   run_id:
     description: Optional externally supplied run ID.
     default: manual
+  lookahead_days:
+    description: Default run lookahead window in days beyond the current UTC date.
+    default: "7"
   schedule_pause_status:
     description: Use PAUSED for dev and UNPAUSED when production scheduling is ready.
     default: PAUSED

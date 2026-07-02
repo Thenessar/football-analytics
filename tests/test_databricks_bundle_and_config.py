@@ -103,6 +103,24 @@ def test_bundle_passes_parallelism_parameters_to_bronze_ingest():
         assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 
+def test_bundle_passes_default_lookahead_to_notebook_tasks():
+    bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
+    bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
+
+    assert "lookahead_days:" in bundle_config
+    assert "default: \"7\"" in bundle_config
+    assert "default: ${var.lookahead_days}" in bundle
+
+    for task_name in ("prepare_run", "bronze_ingest"):
+        match = re.search(
+            rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+            bundle,
+            flags=re.S,
+        )
+        assert match is not None
+        assert 'lookahead_days: "{{job.parameters.lookahead_days}}"' in match.group("task")
+
+
 def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
     bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
     job = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
