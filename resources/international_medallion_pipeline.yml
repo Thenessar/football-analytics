@@ -87,8 +87,8 @@ resources:
             project_directory: ../dbt
             source: WORKSPACE
             warehouse_id: ${var.sql_warehouse_id}
-            catalog: "{{job.parameters.catalog}}"
-            schema: "{{job.parameters.silver_schema}}"
+            catalog: ${var.catalog}
+            schema: ${var.silver_schema}
             commands:
               - dbt deps
           environment_key: dbt_serverless
@@ -100,8 +100,8 @@ resources:
             project_directory: ../dbt
             source: WORKSPACE
             warehouse_id: ${var.sql_warehouse_id}
-            catalog: "{{job.parameters.catalog}}"
-            schema: "{{job.parameters.silver_schema}}"
+            catalog: ${var.catalog}
+            schema: ${var.silver_schema}
             commands:
               - "dbt seed --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
           environment_key: dbt_serverless
@@ -113,8 +113,8 @@ resources:
             project_directory: ../dbt
             source: WORKSPACE
             warehouse_id: ${var.sql_warehouse_id}
-            catalog: "{{job.parameters.catalog}}"
-            schema: "{{job.parameters.silver_schema}}"
+            catalog: ${var.catalog}
+            schema: ${var.silver_schema}
             commands:
               - "dbt build --exclude resource_type:seed --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
           environment_key: dbt_serverless
