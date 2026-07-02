@@ -110,6 +110,65 @@ def test_default_checkpoint_lookup_ignores_future_target_dates(monkeypatch):
     assert captured["max_target_date"] == "2026-06-27"
 
 
+class _FakeSparkExpression:
+    def __eq__(self, other):
+        return self
+
+    def __le__(self, other):
+        return self
+
+    def __and__(self, other):
+        return self
+
+    def isNotNull(self):
+        return self
+
+    def isin(self, values):
+        return self
+
+    def alias(self, name):
+        return self
+
+
+class _FakeSparkFunctions:
+    def col(self, name):
+        return _FakeSparkExpression()
+
+    def lit(self, value):
+        return _FakeSparkExpression()
+
+    def to_date(self, value):
+        return _FakeSparkExpression()
+
+    def max(self, value):
+        return _FakeSparkExpression()
+
+
+class _LazyMissingCheckpointTable:
+    def where(self, condition):
+        raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND")
+
+
+class _FakeSparkWithLazyMissingCheckpoint:
+    def table(self, name):
+        return _LazyMissingCheckpointTable()
+
+
+def test_latest_completed_checkpoint_date_tolerates_lazy_missing_table(monkeypatch):
+    monkeypatch.setattr(ingestion, "_require_pyspark", lambda: (_FakeSparkFunctions(),))
+
+    assert ingestion.latest_completed_checkpoint_date(_FakeSparkWithLazyMissingCheckpoint()) is None
+
+
+def test_completed_checkpoint_fixture_ids_tolerates_lazy_missing_table(monkeypatch):
+    monkeypatch.setattr(ingestion, "_require_pyspark", lambda: (_FakeSparkFunctions(),))
+
+    assert ingestion.completed_checkpoint_fixture_ids(
+        _FakeSparkWithLazyMissingCheckpoint(),
+        endpoint=ingestion.PLAYER_STATS_ENDPOINT,
+    ) == set()
+
+
 def test_date_scope_log_fields_use_single_date_or_range():
     assert ingestion._date_scope_log_fields(["2026-06-25"]) == {
         "date_scope": "single_day",
