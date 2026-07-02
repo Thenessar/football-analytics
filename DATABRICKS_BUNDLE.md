@@ -54,7 +54,7 @@ dbt build
 04_quality_checks.py
 ```
 
-`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze/Ops. `dbt seed` is the only seed materialization step. Silver staging models and Gold mart models live under `dbt/models`.
+`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze/Ops. `dbt seed` is the only seed materialization step; `dbt build` excludes seeds and runs transformations/tests. Silver staging models and Gold mart models live under `dbt/models`.
 
 The bundled workflow is configured for Free Edition/serverless-style execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment.
 The dbt task environment defaults to serverless environment version `4`; override `serverless_environment_version` if your workspace requires a different supported version.
@@ -89,7 +89,8 @@ dbt compile --project-dir dbt
 Use vars to point at non-default Unity Catalog schemas:
 
 ```powershell
-dbt build --project-dir dbt --vars "{catalog: football_analytics, bronze_schema: bronze_dev, silver_schema: silver_dev, gold_schema: gold_dev}"
+dbt seed --project-dir dbt --vars "{catalog: football_analytics, bronze_schema: bronze_dev, silver_schema: silver_dev, gold_schema: gold_dev}"
+dbt build --project-dir dbt --exclude resource_type:seed --vars "{catalog: football_analytics, bronze_schema: bronze_dev, silver_schema: silver_dev, gold_schema: gold_dev}"
 ```
 
 If Databricks credentials or a SQL warehouse are unavailable locally, validate with `pytest -q` and `dbt parse` where possible, then run bundle validation/deploy from an authenticated Databricks CLI session.
