@@ -37,7 +37,7 @@ The bundle builds the local `football_analytics` package as a wheel during deplo
 If you authenticated with a named profile, add `-p <profile-name>` to each command.
 
 For a one-fixture manual run, pass the fixture as a job parameter in Databricks or set `fixture_id`.
-For the default incremental load, leave `fixture_id`, `target_date`, `date_from`, and `date_to` blank; the job starts at the latest completed checkpoint date and runs through today.
+For the default incremental load, leave `fixture_id`, `target_date`, `date_from`, and `date_to` blank; the job starts at the latest completed checkpoint date on or before today and runs through today plus `lookahead_days` (default `7`).
 Set `target_date` to force one calendar date.
 For a backfill, leave `fixture_id` blank and set `date_from` plus `date_to`.
 
@@ -65,6 +65,7 @@ run_id
 target_date
 date_from
 date_to
+lookahead_days
 force_refresh
 include_lineups
 endpoint_max_workers

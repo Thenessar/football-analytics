@@ -39,29 +39,75 @@ def test_daily_dates_are_inclusive():
     ]
 
 
-def test_default_ingestion_dates_use_last_checkpoint_through_today(monkeypatch):
+def test_default_ingestion_dates_use_last_checkpoint_through_lookahead(monkeypatch):
     monkeypatch.setattr(
         ingestion,
         "latest_completed_checkpoint_date",
-        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE: "2026-06-25",
+        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE, max_target_date=None: "2026-06-25",
     )
 
     selection = ingestion.resolve_ingestion_dates(object(), today="2026-06-27")
 
-    assert selection.dates == ("2026-06-25", "2026-06-26", "2026-06-27")
-    assert selection.mode == "checkpoint_to_today"
+    assert selection.dates == (
+        "2026-06-25",
+        "2026-06-26",
+        "2026-06-27",
+        "2026-06-28",
+        "2026-06-29",
+        "2026-06-30",
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-04",
+    )
+    assert selection.mode == "checkpoint_to_lookahead"
 
 
 def test_default_ingestion_dates_fall_back_to_today_without_checkpoint(monkeypatch):
     monkeypatch.setattr(
         ingestion,
         "latest_completed_checkpoint_date",
-        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE: None,
+        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE, max_target_date=None: None,
     )
 
     selection = ingestion.resolve_ingestion_dates(None, today="2026-06-27")
 
-    assert selection.dates == ("2026-06-27",)
+    assert selection.dates == (
+        "2026-06-27",
+        "2026-06-28",
+        "2026-06-29",
+        "2026-06-30",
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-04",
+    )
+
+
+def test_default_ingestion_dates_use_configured_lookahead(monkeypatch):
+    monkeypatch.setattr(
+        ingestion,
+        "latest_completed_checkpoint_date",
+        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE, max_target_date=None: None,
+    )
+
+    selection = ingestion.resolve_ingestion_dates(None, today="2026-06-27", lookahead_days=2)
+
+    assert selection.dates == ("2026-06-27", "2026-06-28", "2026-06-29")
+
+
+def test_default_checkpoint_lookup_ignores_future_target_dates(monkeypatch):
+    captured = {}
+
+    def fake_latest(spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE, max_target_date=None):
+        captured["max_target_date"] = max_target_date
+        return "2026-06-27"
+
+    monkeypatch.setattr(ingestion, "latest_completed_checkpoint_date", fake_latest)
+
+    ingestion.resolve_ingestion_dates(object(), today="2026-06-27")
+
+    assert captured["max_target_date"] == "2026-06-27"
 
 
 def test_date_scope_log_fields_use_single_date_or_range():
@@ -167,6 +213,51 @@ def test_senior_mens_fixture_filter_excludes_club_women_youth_and_keeps_allowed(
 
     assert [item["fixture"]["id"] for item in eligible] == [1, 4]
     assert [item["fixture"]["id"] for item in skipped] == [2, 3, 5]
+
+
+def test_fixture_business_state_classification_matches_lifecycle():
+    fixture = {"fixture": {"id": 1, "status": {"short": "NS"}}}
+    confirmed_lineups = {
+        "response": [
+            {"team": {"id": 10}, "startXI": [{"player": {"id": player_id}} for player_id in range(11)]},
+            {"team": {"id": 20}, "startXI": [{"player": {"id": player_id}} for player_id in range(11, 22)]},
+        ]
+    }
+    player_stats = {
+        "response": [
+            {"team": {"id": 10}, "players": [{"player": {"id": 1}}]},
+            {"team": {"id": 20}, "players": [{"player": {"id": 2}}]},
+        ]
+    }
+
+    assert ingestion.classify_fixture_business_state(fixture) == ingestion.FIXTURE_STATE_SCHEDULED
+    assert (
+        ingestion.classify_fixture_business_state(fixture, lineups_payload=confirmed_lineups)
+        == ingestion.FIXTURE_STATE_LINEUPS_CONFIRMED
+    )
+    assert (
+        ingestion.classify_fixture_business_state({"fixture": {"status": {"short": "1H"}}})
+        == ingestion.FIXTURE_STATE_LIVE
+    )
+    assert (
+        ingestion.classify_fixture_business_state(
+            {"fixture": {"status": {"short": "FT"}}},
+            player_stats_payload=player_stats,
+        )
+        == ingestion.FIXTURE_STATE_COMPLETED
+    )
+
+
+def test_fixture_endpoint_selection_skips_player_stats_for_scheduled_matches():
+    fixtures = [
+        {"fixture": {"id": 1, "status": {"short": "NS"}}},
+        {"fixture": {"id": 2, "status": {"short": "1H"}}},
+        {"fixture": {"id": 3, "status": {"short": "FT"}}},
+        {"fixture": {"id": 4, "status": {"short": "CANC"}}},
+    ]
+
+    assert ingestion.fixture_ids_for_player_stats(fixtures) == (2, 3)
+    assert ingestion.fixture_ids_for_lineups(fixtures) == (1, 2, 3)
 
 
 def test_bronze_fixture_metadata_rows_include_request_hash_and_run_context():
@@ -377,7 +468,7 @@ def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypa
     discovery = ingestion.FixtureDiscoveryResult(
         target_date="2026-06-25",
         raw_payload={"response": [{"fixture": {"id": 100}}, {"fixture": {"id": 200}}]},
-        eligible_fixtures=({"fixture": {"id": 100}},),
+        eligible_fixtures=({"fixture": {"id": 100, "status": {"short": "FT"}}},),
         skipped_fixtures=({"fixture": {"id": 200}},),
     )
     player_fixture_ids = []
@@ -421,16 +512,17 @@ def test_medallion_bronze_keeps_scheduled_fixture_and_skips_missing_lineups(monk
         eligible_fixtures=({"fixture": {"id": 100, "status": {"short": "NS"}}},),
         skipped_fixtures=(),
     )
+    player_fixture_ids = []
 
     def fake_discover(spark, match_date, **kwargs):
         discovery_kwargs.update(kwargs)
         return discovery
 
     monkeypatch.setattr(ingestion, "discover_senior_mens_fixtures_for_date", fake_discover)
-    monkeypatch.setattr(
-        ingestion,
-        "ingest_player_stats_for_fixtures_to_bronze",
-        lambda spark, fixture_ids, **kwargs: ingestion.BronzeIngestionSummary(
+
+    def fake_player_ingest(spark, fixture_ids, **kwargs):
+        player_fixture_ids.extend(fixture_ids)
+        return ingestion.BronzeIngestionSummary(
             requested_dates=(),
             discovered_fixtures=len(fixture_ids),
             ingested_fixtures=len(fixture_ids),
@@ -438,8 +530,9 @@ def test_medallion_bronze_keeps_scheduled_fixture_and_skips_missing_lineups(monk
             failed_fixtures=0,
             fixture_ids=tuple(fixture_ids),
             player_stat_payloads_ingested=len(fixture_ids),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(ingestion, "ingest_player_stats_for_fixtures_to_bronze", fake_player_ingest)
     monkeypatch.setattr(
         ingestion,
         "ingest_lineups_for_fixtures_to_bronze",
@@ -462,6 +555,7 @@ def test_medallion_bronze_keeps_scheduled_fixture_and_skips_missing_lineups(monk
     )
 
     assert discovery_kwargs["completed_only"] is False
+    assert player_fixture_ids == []
     assert summary.fixture_ids == (100,)
     assert summary.lineups_skipped == 1
     assert summary.failed_fixtures == 0
