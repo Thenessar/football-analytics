@@ -1881,14 +1881,17 @@ def completed_checkpoint_fixture_ids(
         checkpoint = spark.table(checkpoint_table)
     except Exception:
         return set()
-    filtered = checkpoint.where(
-        (F.col("endpoint") == endpoint)
-        & (F.col("status") == CHECKPOINT_COMPLETED)
-        & F.col("fixture_id").isNotNull()
-    )
-    if target_date:
-        filtered = filtered.where(F.col("target_date") == F.to_date(F.lit(target_date)))
-    return {int(row.fixture_id) for row in filtered.select("fixture_id").distinct().collect()}
+    try:
+        filtered = checkpoint.where(
+            (F.col("endpoint") == endpoint)
+            & (F.col("status") == CHECKPOINT_COMPLETED)
+            & F.col("fixture_id").isNotNull()
+        )
+        if target_date:
+            filtered = filtered.where(F.col("target_date") == F.to_date(F.lit(target_date)))
+        return {int(row.fixture_id) for row in filtered.select("fixture_id").distinct().collect()}
+    except Exception:
+        return set()
 
 
 def latest_completed_checkpoint_date(
@@ -1907,14 +1910,17 @@ def latest_completed_checkpoint_date(
     except Exception:
         return None
 
-    filtered = checkpoint.where(
-        (F.col("status") == CHECKPOINT_COMPLETED)
-        & F.col("target_date").isNotNull()
-        & F.col("endpoint").isin([str(endpoint) for endpoint in endpoints])
-    )
-    if max_target_date:
-        filtered = filtered.where(F.col("target_date") <= F.to_date(F.lit(max_target_date)))
-    rows = filtered.agg(F.max("target_date").alias("target_date")).collect()
+    try:
+        filtered = checkpoint.where(
+            (F.col("status") == CHECKPOINT_COMPLETED)
+            & F.col("target_date").isNotNull()
+            & F.col("endpoint").isin([str(endpoint) for endpoint in endpoints])
+        )
+        if max_target_date:
+            filtered = filtered.where(F.col("target_date") <= F.to_date(F.lit(max_target_date)))
+        rows = filtered.agg(F.max("target_date").alias("target_date")).collect()
+    except Exception:
+        return None
     if not rows:
         return None
     value = rows[0]["target_date"] if hasattr(rows[0], "__getitem__") else rows[0].target_date
