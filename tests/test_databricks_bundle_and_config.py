@@ -73,6 +73,9 @@ def test_bundle_runs_dbt_after_bronze_ingestion():
     assert "bronze_schema: \\\"{{job.parameters.bronze_schema}}\\\"" in bundle
     assert "silver_schema: \\\"{{job.parameters.silver_schema}}\\\"" in bundle
     assert "gold_schema: \\\"{{job.parameters.gold_schema}}\\\"" in bundle
+    assert bundle.count("catalog: \"{{job.parameters.catalog}}\"") >= 3
+    assert bundle.count("schema: \"{{job.parameters.silver_schema}}\"") >= 3
+    assert "dbt build --exclude resource_type:seed" in bundle
     assert "task_key: dbt_build" in re.search(
         r"- task_key: quality_checks\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
         bundle,
