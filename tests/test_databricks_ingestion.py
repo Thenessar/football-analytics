@@ -5,6 +5,15 @@ import time
 from football_analytics import databricks_ingestion as ingestion
 
 
+def _player_stats_payload(team_id=1):
+    return {
+        "response": [
+            {"team": {"id": team_id}, "players": [{"player": {"id": team_id * 100}}]},
+            {"team": {"id": team_id + 1}, "players": []},
+        ]
+    }
+
+
 def test_delta_paths_match_bronze_and_silver_contract():
     assert ingestion.BRONZE_FOOTBALL_MATCH_RAW_PATH == "/mnt/syndicate/bronze/football_match_raw"
     assert ingestion.BRONZE_LINEUPS_RAW_PATH == "/mnt/syndicate/bronze/football_lineups_raw"
@@ -307,7 +316,7 @@ def test_fixture_business_state_classification_matches_lifecycle():
     )
 
 
-def test_fixture_endpoint_selection_skips_player_stats_for_scheduled_matches():
+def test_fixture_endpoint_selection_fetches_player_stats_only_for_completed_matches():
     fixtures = [
         {"fixture": {"id": 1, "status": {"short": "NS"}}},
         {"fixture": {"id": 2, "status": {"short": "1H"}}},
@@ -315,7 +324,7 @@ def test_fixture_endpoint_selection_skips_player_stats_for_scheduled_matches():
         {"fixture": {"id": 4, "status": {"short": "CANC"}}},
     ]
 
-    assert ingestion.fixture_ids_for_player_stats(fixtures) == (2, 3)
+    assert ingestion.fixture_ids_for_player_stats(fixtures) == (3,)
     assert ingestion.fixture_ids_for_lineups(fixtures) == (1, 2, 3)
 
 
@@ -341,7 +350,7 @@ def test_player_stats_skips_completed_fixture_ids(monkeypatch):
 
     def fake_fetch(endpoint, params, *, api_key=None):
         called_fixture_ids.append(params["fixture"])
-        return {"response": [{"team": {"id": 1}, "players": []}]}
+        return _player_stats_payload()
 
     monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
 
@@ -361,7 +370,7 @@ def test_player_stats_force_refresh_refetches_completed_fixture_ids(monkeypatch)
 
     def fake_fetch(endpoint, params, *, api_key=None):
         called_fixture_ids.append(params["fixture"])
-        return {"response": [{"team": {"id": 1}, "players": []}]}
+        return _player_stats_payload()
 
     monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
 
@@ -375,6 +384,34 @@ def test_player_stats_force_refresh_refetches_completed_fixture_ids(monkeypatch)
     assert called_fixture_ids == [10, 11]
 
 
+def test_player_stats_empty_payload_is_skipped_for_retry(monkeypatch):
+    checkpoint_records = []
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(
+        ingestion,
+        "fetch_football_api_payload",
+        lambda endpoint, params, *, api_key=None, logger=None: {"response": []},
+    )
+    monkeypatch.setattr(ingestion, "write_bronze_raw_envelopes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ingestion,
+        "upsert_endpoint_checkpoint",
+        lambda spark, **kwargs: checkpoint_records.append(kwargs),
+    )
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", lambda *args, **kwargs: None)
+
+    summary = ingestion.ingest_player_stats_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10],
+        completed_fixture_ids=[],
+    )
+
+    assert checkpoint_records[-1]["status"] == ingestion.CHECKPOINT_SKIPPED
+    assert summary.player_stat_payloads_ingested == 0
+    assert summary.skipped_fixtures == 1
+
+
 def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
     log_records = []
     checkpoint_records = []
@@ -386,7 +423,7 @@ def test_player_stats_logs_progress_and_pending_checkpoints(monkeypatch):
     def fake_fetch(endpoint, params, *, api_key=None, logger=None):
         if params["fixture"] == 12:
             raise RuntimeError("temporary failure\nwithout payload")
-        return {"response": [{"team": {"id": 1}, "players": []}]}
+        return _player_stats_payload()
 
     def fake_upsert(spark, **kwargs):
         checkpoint_records.append((kwargs["fixture_id"], kwargs["endpoint"], kwargs["status"]))
@@ -454,7 +491,7 @@ def test_player_stats_parallel_fetches_with_configured_workers(monkeypatch):
         time.sleep(0.02)
         with lock:
             active_fetches -= 1
-        return {"response": [{"team": {"id": params["fixture"]}, "players": []}]}
+        return _player_stats_payload(params["fixture"])
 
     monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: False)
     monkeypatch.setattr(ingestion, "_fetch_payload_with_optional_logger", fake_fetch)
