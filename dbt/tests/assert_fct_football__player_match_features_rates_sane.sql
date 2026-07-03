@@ -1,0 +1,22 @@
+select *
+from {{ ref('fct_football__player_match_features') }}
+where shots_per_90 < 0
+   or shots_on_per_90 < 0
+   or goals_per_90 < 0
+   or assists_per_90 < 0
+   or passes_per_90 < 0
+   or key_passes_per_90 < 0
+   or tackles_per_90 < 0
+   or interceptions_per_90 < 0
+   or duels_per_90 < 0
+   or dribbles_attempted_per_90 < 0
+   or fouls_committed_per_90 < 0
+   or saves_per_90 < 0
+   or shots_on_target_rate < 0
+   or shots_on_target_rate > 1
+   or pass_accuracy_pct < 0
+   or pass_accuracy_pct > 100
+   or duels_won_rate < 0
+   or duels_won_rate > 1
+   or dribble_success_rate < 0
+   or dribble_success_rate > 1

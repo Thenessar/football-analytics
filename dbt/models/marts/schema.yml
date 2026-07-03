@@ -30,6 +30,272 @@ models:
               arguments:
                 values: ['home', 'away']
 
+  - name: fct_football__player_match_features
+    description: Canonical gold player-fixture feature mart for data science. One row represents one player for one team in one fixture, with player statistics, match context, lineup context, engineered per-90 metrics, rate metrics, and modeling flags.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        description: API-Football fixture identifier.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__player_match_stats')
+                field: fixture_id
+      - name: team_id
+        description: API-Football team identifier for the player's team in the fixture.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__player_match_stats')
+                field: team_id
+      - name: player_id
+        description: API-Football player identifier.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__player_match_stats')
+                field: player_id
+      - name: fixture_date_utc
+        description: Fixture kickoff timestamp in UTC.
+      - name: league_id
+        description: API-Football league identifier.
+      - name: league_name
+        description: League name from the fixture context.
+      - name: league_season
+        description: League season from the fixture context.
+      - name: status_short
+        description: Provider fixture status code.
+      - name: home_away
+        description: Whether the player's team was home or away.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['home', 'away']
+      - name: team_name
+        description: Team name from the player statistics payload.
+      - name: opponent_team_id
+        description: API-Football identifier for the opposing team.
+        tests:
+          - not_null
+      - name: opponent_team_name
+        description: Opposing team name from the fixture context.
+      - name: goals_for
+        description: Goals scored by the player's team in the fixture.
+      - name: goals_against
+        description: Goals conceded by the player's team in the fixture.
+      - name: player_name
+        description: Player display name from the provider payload.
+      - name: player_photo_url
+        description: Provider player photo URL.
+      - name: games_number
+        description: Shirt number reported in the player statistics payload.
+      - name: games_position
+        description: Position reported in the player statistics payload.
+      - name: lineup_position
+        description: Position reported in the lineup payload.
+      - name: primary_position
+        description: Preferred position for modeling, using lineup position when present and falling back to the statistics position.
+      - name: position_group
+        description: Standardized modeling position group.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['G', 'D', 'M', 'F']
+      - name: is_starting
+        description: Raw lineup flag indicating whether the player was in the starting XI when lineup data is available.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: is_starter
+        description: Modeling flag for starting players, derived from lineup data and falling back to the provider substitute flag.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: was_substitute
+        description: Modeling flag for substitute appearances, derived from player statistics and lineup data.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: is_captain
+        description: Modeling flag indicating whether the player was marked as captain.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: is_goalkeeper
+        description: Modeling flag derived from the standardized position group.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: formation
+        description: Team formation reported in the lineup payload.
+      - name: formation_grid
+        description: Player grid location inside the reported formation.
+      - name: formation_row
+        description: Numeric row parsed from formation_grid.
+      - name: formation_column
+        description: Numeric column parsed from formation_grid.
+      - name: games_minutes
+        description: Minutes played by the player in the fixture.
+        tests:
+          - not_null
+      - name: games_rating
+        description: Provider player rating cast to a numeric value.
+      - name: shots_total
+        description: Provider total shots.
+        tests:
+          - not_null
+      - name: shots_on
+        description: Provider shots on target.
+        tests:
+          - not_null
+      - name: goals_total
+        description: Provider goals scored.
+        tests:
+          - not_null
+      - name: goals_assists
+        description: Provider assists.
+      - name: goals_conceded
+        description: Provider goals conceded, primarily relevant for goalkeepers.
+      - name: goals_saves
+        description: Provider saves, primarily relevant for goalkeepers.
+      - name: passes_total
+        description: Provider total passes.
+      - name: passes_key
+        description: Provider key passes.
+      - name: passes_accuracy
+        description: Provider pass accuracy percentage value cast from the raw string payload.
+      - name: tackles_total
+        description: Provider total tackles.
+      - name: tackles_blocks
+        description: Provider blocked shots.
+      - name: tackles_interceptions
+        description: Provider interceptions.
+      - name: duels_total
+        description: Provider total duels.
+      - name: duels_won
+        description: Provider duels won.
+      - name: dribbles_attempts
+        description: Provider dribble attempts.
+      - name: dribbles_success
+        description: Provider successful dribbles.
+      - name: dribbles_past
+        description: Provider times dribbled past.
+      - name: fouls_drawn
+        description: Provider fouls drawn.
+      - name: fouls_committed
+        description: Provider fouls committed.
+      - name: cards_yellow
+        description: Provider yellow cards.
+      - name: cards_red
+        description: Provider red cards.
+      - name: penalty_won
+        description: Provider penalties won.
+      - name: penalty_committed
+        description: Provider penalties committed; sourced from API-Football's `commited` field.
+      - name: penalty_scored
+        description: Provider penalties scored.
+      - name: penalty_missed
+        description: Provider penalties missed.
+      - name: penalty_saved
+        description: Provider penalties saved.
+      - name: shots_per_90
+        description: Total shots scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: shots_on_per_90
+        description: Shots on target scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: goals_per_90
+        description: Goals scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: assists_per_90
+        description: Assists scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: passes_per_90
+        description: Total passes scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: key_passes_per_90
+        description: Key passes scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: tackles_per_90
+        description: Total tackles scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: interceptions_per_90
+        description: Interceptions scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: duels_per_90
+        description: Total duels scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: dribbles_attempted_per_90
+        description: Dribble attempts scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: fouls_committed_per_90
+        description: Fouls committed scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: saves_per_90
+        description: Goalkeeper saves scaled to a 90-minute rate.
+        tests:
+          - not_null
+      - name: shots_on_target_rate
+        description: Share of total shots that were on target, zero when the player had no shots.
+        tests:
+          - not_null
+      - name: pass_accuracy_pct
+        description: Provider pass accuracy percentage exposed as a modeling feature.
+        tests:
+          - not_null
+      - name: duels_won_rate
+        description: Share of total duels won, zero when the player had no duels.
+        tests:
+          - not_null
+      - name: dribble_success_rate
+        description: Share of attempted dribbles completed, zero when the player attempted no dribbles.
+        tests:
+          - not_null
+      - name: game_importance_scalar
+        description: Context scalar available for weighted modeling.
+      - name: opponent_strength_adjustment
+        description: Context scalar for opponent strength adjustment.
+      - name: defensive_containment_rating
+        description: Context defensive containment rating for the opponent matchup.
+      - name: defensive_elo
+        description: Context defensive Elo-like baseline for the opponent matchup.
+
   - name: dim_football__rating_baseline
     description: Gold model-ready FIFA ranking baseline with normalized team names.
     columns:
@@ -48,7 +314,7 @@ models:
           - not_null
 
   - name: fct_football__player_shot_features
-    description: Gold player shot-rate features joined to fixture context.
+    description: Specialized gold shot-rate mart rebuilt from fct_football__player_match_features for backward-compatible shot modeling workflows.
     tests:
       - unique_combination_of_columns:
           arguments:
@@ -75,7 +341,7 @@ models:
           - not_null
 
   - name: fct_football__player_sapm
-    description: Gold S-APM-ready player features with position priors and context weights.
+    description: Specialized gold S-APM-ready mart rebuilt from fct_football__player_match_features with position priors and context weights.
     tests:
       - unique_combination_of_columns:
           arguments:
