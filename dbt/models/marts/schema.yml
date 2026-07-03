@@ -1,7 +1,7 @@
 version: 2
 
 models:
-  - name: football_team_match_context
+  - name: fct_football__team_match_context
     description: Gold team-fixture context table with one row per team per fixture.
     tests:
       - unique_combination_of_columns:
@@ -15,7 +15,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('stg_football_fixtures')
+                to: ref('stg_football__fixtures')
                 field: fixture_id
       - name: team_id
         tests:
@@ -30,7 +30,7 @@ models:
               arguments:
                 values: ['home', 'away']
 
-  - name: football_rating_baseline
+  - name: dim_football__rating_baseline
     description: Gold model-ready FIFA ranking baseline with normalized team names.
     columns:
       - name: rank
@@ -47,7 +47,7 @@ models:
         tests:
           - not_null
 
-  - name: football_player_shot_features
+  - name: fct_football__player_shot_features
     description: Gold player shot-rate features joined to fixture context.
     tests:
       - unique_combination_of_columns:
@@ -62,7 +62,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('stg_football_player_match_stats')
+                to: ref('stg_football__player_match_stats')
                 field: fixture_id
       - name: player_id
         tests:
@@ -74,7 +74,7 @@ models:
         tests:
           - not_null
 
-  - name: football_player_sapm
+  - name: fct_football__player_sapm
     description: Gold S-APM-ready player features with position priors and context weights.
     tests:
       - unique_combination_of_columns:
@@ -89,7 +89,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('stg_football_player_match_stats')
+                to: ref('stg_football__player_match_stats')
                 field: fixture_id
       - name: player_id
         tests:

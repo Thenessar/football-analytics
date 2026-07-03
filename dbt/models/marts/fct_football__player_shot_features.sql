@@ -1,5 +1,5 @@
 with players as (
-    select * from {{ ref('stg_football_player_match_stats') }}
+    select * from {{ ref('stg_football__player_match_stats') }}
 ),
 
 fixtures as (
@@ -11,7 +11,7 @@ fixtures as (
         league_season,
         home_team_id,
         away_team_id
-    from {{ ref('stg_football_fixtures') }}
+    from {{ ref('stg_football__fixtures') }}
 )
 
 select

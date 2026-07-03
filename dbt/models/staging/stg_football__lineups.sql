@@ -1,5 +1,3 @@
-{{ config(alias='football_lineups') }}
-
 with bronze as (
     select
         fixture_id,
@@ -13,7 +11,7 @@ parsed as (
         cast(fixture_id as int) as fixture_id,
         from_json(
             raw_payload,
-            'struct<response:array<struct<team:struct<id:int,name:string>,formation:string,startXI:array<struct<player:struct<id:int,name:string,number:int,pos:string>>>,substitutes:array<struct<player:struct<id:int,name:string,number:int,pos:string>>>>>>'
+            'struct<response:array<struct<team:struct<id:int,name:string>,formation:string,startXI:array<struct<player:struct<id:int,name:string,number:int,pos:string,grid:string>>>,substitutes:array<struct<player:struct<id:int,name:string,number:int,pos:string,grid:string>>>>>>'
         ) as payload,
         response_hash
     from bronze
@@ -65,6 +63,9 @@ typed as (
         player_entry.player.name as player_name,
         player_entry.player.pos as position,
         cast(player_entry.player.number as int) as number,
+        player_entry.player.grid as formation_grid,
+        cast(nullif(regexp_extract(player_entry.player.grid, '^(\\d+):(\\d+)$', 1), '') as int) as formation_row,
+        cast(nullif(regexp_extract(player_entry.player.grid, '^(\\d+):(\\d+)$', 2), '') as int) as formation_column,
         is_starting,
         team_entry.formation as formation,
         response_hash,
@@ -76,7 +77,7 @@ typed as (
 deduped as (
     select *
     from typed
-    where fixture_id in (select fixture_id from {{ ref('stg_football_fixtures') }})
+    where fixture_id in (select fixture_id from {{ ref('stg_football__fixtures') }})
     qualify row_number() over (
         partition by fixture_id, team_id, player_id
         order by updated_at_utc desc

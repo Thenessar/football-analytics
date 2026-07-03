@@ -7,7 +7,7 @@ with players as (
             when upper(games_position) in ('G', 'GK', 'GOALKEEPER') then 'G'
             else 'M'
         end as position_group
-    from {{ ref('stg_football_player_match_stats') }}
+    from {{ ref('stg_football__player_match_stats') }}
 ),
 
 with_priors as (
@@ -31,7 +31,7 @@ with_context as (
         coalesce(context.defensive_containment_rating, 1.0) as defensive_containment_rating,
         coalesce(context.defensive_elo, 1500.0) as defensive_elo
     from with_priors
-    left join {{ ref('football_team_match_context') }} as context
+    left join {{ ref('fct_football__team_match_context') }} as context
         on with_priors.fixture_id = context.fixture_id
        and with_priors.team_id = context.team_id
 )

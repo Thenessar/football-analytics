@@ -1,7 +1,7 @@
 version: 2
 
 models:
-  - name: stg_football_fixtures
+  - name: stg_football__fixtures
     description: Silver fixture rows parsed from raw API-Football fixture envelopes.
     columns:
       - name: fixture_id
@@ -28,7 +28,7 @@ models:
                 to: ref('senior_mens_international_leagues')
                 field: league_id
 
-  - name: stg_football_player_match_stats
+  - name: stg_football__player_match_stats
     description: Silver player-match statistics parsed from raw API-Football player envelopes.
     tests:
       - unique_combination_of_columns:
@@ -43,7 +43,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('stg_football_fixtures')
+                to: ref('stg_football__fixtures')
                 field: fixture_id
       - name: team_id
         tests:
@@ -51,9 +51,19 @@ models:
       - name: player_id
         tests:
           - not_null
+      - name: player_photo_url
+        description: API-Football player photo URL.
       - name: games_minutes
         tests:
           - not_null
+      - name: games_number
+        description: Shirt number reported in the fixture player statistics payload.
+      - name: games_rating
+        description: Provider player rating cast from the raw string value.
+      - name: games_captain
+        description: Whether the player was marked as captain in the fixture statistics payload.
+      - name: games_substitute
+        description: Whether the player was marked as substitute in the fixture statistics payload.
       - name: shots_total
         tests:
           - not_null
@@ -63,8 +73,12 @@ models:
       - name: goals_total
         tests:
           - not_null
+      - name: passes_accuracy
+        description: Provider pass accuracy value cast from the raw string payload.
+      - name: penalty_committed
+        description: Penalties committed by the player; sourced from API-Football's `commited` field.
 
-  - name: stg_football_lineups
+  - name: stg_football__lineups
     description: Silver lineup rows parsed from raw API-Football lineup envelopes.
     tests:
       - unique_combination_of_columns:
@@ -79,7 +93,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('stg_football_fixtures')
+                to: ref('stg_football__fixtures')
                 field: fixture_id
       - name: team_id
         tests:
@@ -87,6 +101,14 @@ models:
       - name: player_id
         tests:
           - not_null
+      - name: formation
+        description: Team formation reported by API-Football, for example 4-4-2.
+      - name: formation_grid
+        description: Player grid position inside the reported formation, for example 4:2.
+      - name: formation_row
+        description: Numeric row parsed from formation_grid.
+      - name: formation_column
+        description: Numeric column parsed from formation_grid.
       - name: is_starting
         tests:
           - not_null

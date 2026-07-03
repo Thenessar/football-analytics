@@ -72,7 +72,7 @@ endpoint_max_workers
 api_rate_limit_per_minute
 ```
 
-The senior men's international league allowlist is generated from `football_analytics/league_scope.py` into `dbt/seeds/senior_mens_international_leagues.csv` with `python scripts/generate_league_seed.py`. The FIFA men's ranking seed is versioned at `dbt/seeds/fifa_mens_world_ranking_december_2022.csv`; `football_rating_baseline` normalizes the source `Raiting` typo to `rating`.
+The senior men's international league allowlist is generated from `football_analytics/league_scope.py` into `dbt/seeds/senior_mens_international_leagues.csv` with `python scripts/generate_league_seed.py`. The FIFA men's ranking seed is versioned at `dbt/seeds/fifa_mens_world_ranking_december_2022.csv`; `dim_football__rating_baseline` normalizes the source `Raiting` typo to `rating`.
 
 The schedule is paused by default. Set `schedule_pause_status=UNPAUSED` only when the job is ready to run automatically.
 

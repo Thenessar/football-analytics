@@ -1,5 +1,5 @@
 with fixtures as (
-    select * from {{ ref('stg_football_fixtures') }}
+    select * from {{ ref('stg_football__fixtures') }}
 ),
 
 home_rows as (

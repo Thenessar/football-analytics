@@ -1,5 +1,3 @@
-{{ config(alias='football_fixtures') }}
-
 with bronze as (
     select
         raw_payload,

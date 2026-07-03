@@ -653,6 +653,8 @@ def _raise_if_quota_response(response) -> None:
 
 def _football_api_player_stats_schema():
     _, ArrayType, IntegerType, StringType, StructField, StructType = _require_pyspark()
+    from pyspark.sql.types import BooleanType
+
     return StructType([
         StructField("response", ArrayType(StructType([
             StructField("team", StructType([
@@ -663,18 +665,61 @@ def _football_api_player_stats_schema():
                 StructField("player", StructType([
                     StructField("id", IntegerType()),
                     StructField("name", StringType()),
+                    StructField("photo", StringType()),
                 ])),
                 StructField("statistics", ArrayType(StructType([
                     StructField("games", StructType([
                         StructField("minutes", IntegerType()),
+                        StructField("number", IntegerType()),
                         StructField("position", StringType()),
+                        StructField("rating", StringType()),
+                        StructField("captain", BooleanType()),
+                        StructField("substitute", BooleanType()),
                     ])),
+                    StructField("offsides", IntegerType()),
                     StructField("shots", StructType([
                         StructField("total", IntegerType()),
                         StructField("on", IntegerType()),
                     ])),
                     StructField("goals", StructType([
                         StructField("total", IntegerType()),
+                        StructField("conceded", IntegerType()),
+                        StructField("assists", IntegerType()),
+                        StructField("saves", IntegerType()),
+                    ])),
+                    StructField("passes", StructType([
+                        StructField("total", IntegerType()),
+                        StructField("key", IntegerType()),
+                        StructField("accuracy", StringType()),
+                    ])),
+                    StructField("tackles", StructType([
+                        StructField("total", IntegerType()),
+                        StructField("blocks", IntegerType()),
+                        StructField("interceptions", IntegerType()),
+                    ])),
+                    StructField("duels", StructType([
+                        StructField("total", IntegerType()),
+                        StructField("won", IntegerType()),
+                    ])),
+                    StructField("dribbles", StructType([
+                        StructField("attempts", IntegerType()),
+                        StructField("success", IntegerType()),
+                        StructField("past", IntegerType()),
+                    ])),
+                    StructField("fouls", StructType([
+                        StructField("drawn", IntegerType()),
+                        StructField("committed", IntegerType()),
+                    ])),
+                    StructField("cards", StructType([
+                        StructField("yellow", IntegerType()),
+                        StructField("red", IntegerType()),
+                    ])),
+                    StructField("penalty", StructType([
+                        StructField("won", IntegerType()),
+                        StructField("commited", IntegerType()),
+                        StructField("scored", IntegerType()),
+                        StructField("missed", IntegerType()),
+                        StructField("saved", IntegerType()),
                     ])),
                 ]))),
             ]))),
@@ -730,6 +775,7 @@ def _football_api_lineups_schema():
             StructField("name", StringType()),
             StructField("number", IntegerType()),
             StructField("pos", StringType()),
+            StructField("grid", StringType()),
         ])),
     ])
     return StructType([
