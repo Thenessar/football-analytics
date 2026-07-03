@@ -322,7 +322,7 @@ def fixture_ids_for_player_stats(fixtures: Iterable[Mapping]) -> tuple[int, ...]
     fixture_ids = []
     for fixture in fixtures:
         status = fixture_status_short(fixture)
-        if status in COMPLETED_FIXTURE_STATUSES or status in LIVE_FIXTURE_STATUSES:
+        if status in COMPLETED_FIXTURE_STATUSES:
             fixture_id = (fixture.get("fixture") or {}).get("id")
             if fixture_id is not None:
                 fixture_ids.append(int(fixture_id))
@@ -1270,6 +1270,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
     """Fetches `/fixtures/players` for explicit fixture IDs and lands Bronze rows."""
     ingested = []
     failed = 0
+    skipped = 0
     fixture_id_list = [int(fixture_id) for fixture_id in fixture_ids]
     completed_ids = set(completed_fixture_ids or ())
     if completed_fixture_ids is None and _supports_spark_sql(spark):
@@ -1284,6 +1285,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
         completed_fixture_ids=completed_ids,
         force_refresh=force_refresh,
     )
+    skipped += len(plan.skipped_fixture_ids)
     _log_ingestion_event(
         logger,
         logging.INFO,
@@ -1339,6 +1341,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
             if result.error is not None:
                 raise result.error
             payload = result.payload or {}
+            has_match_data = player_stats_payload_has_match_data(payload)
             if _supports_spark_sql(spark):
                 write_bronze_raw_envelopes(
                     spark,
@@ -1355,10 +1358,26 @@ def ingest_player_stats_for_fixtures_to_bronze(
                     target_date=target_date,
                     fixture_id=fixture_id,
                     endpoint=PLAYER_STATS_ENDPOINT,
-                    status=CHECKPOINT_COMPLETED,
+                    status=CHECKPOINT_COMPLETED if has_match_data else CHECKPOINT_SKIPPED,
                     response_hash=payload_hash(payload),
                     checkpoint_table=checkpoint_table,
                 )
+            if not has_match_data:
+                skipped += 1
+                _log_ingestion_event(
+                    logger,
+                    logging.INFO,
+                    "fixture_endpoint_skipped",
+                    run_id=run_id,
+                    stage="bronze_ingest",
+                    target_date=target_date,
+                    endpoint=PLAYER_STATS_ENDPOINT,
+                    fixture_id=fixture_id,
+                    index=index,
+                    total=len(plan.fixture_ids_to_fetch),
+                    status=CHECKPOINT_SKIPPED,
+                )
+                continue
             _log_ingestion_event(
                 logger,
                 logging.INFO,
@@ -1405,7 +1424,7 @@ def ingest_player_stats_for_fixtures_to_bronze(
         requested_dates=(),
         discovered_fixtures=len(fixture_id_list),
         ingested_fixtures=len(ingested),
-        skipped_fixtures=len(plan.skipped_fixture_ids),
+        skipped_fixtures=skipped,
         failed_fixtures=failed,
         fixture_ids=tuple(ingested),
         eligible_fixtures=len(fixture_id_list),
