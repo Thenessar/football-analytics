@@ -196,7 +196,7 @@ select
     case when games_minutes > 0 then coalesce(goals_saves, 0) * 90.0 / games_minutes else 0.0 end as saves_per_90,
 
     case when coalesce(shots_total, 0) > 0 then coalesce(shots_on, 0) * 1.0 / shots_total else 0.0 end as shots_on_target_rate,
-    case when coalesce(passes_total, 0) > 0 then coalesce(passes_accuracy, 0) else 0.0 end as pass_accuracy_pct,
+    case when coalesce(passes_total, 0) > 0 then coalesce(passes_accuracy, 0) * 100.0 / passes_total else 0.0 end as pass_accuracy_pct,
     case when coalesce(duels_total, 0) > 0 then coalesce(duels_won, 0) * 1.0 / duels_total else 0.0 end as duels_won_rate,
     case when coalesce(dribbles_attempts, 0) > 0 then coalesce(dribbles_success, 0) * 1.0 / dribbles_attempts else 0.0 end as dribble_success_rate,
 

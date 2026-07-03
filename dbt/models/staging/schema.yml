@@ -74,7 +74,7 @@ models:
         tests:
           - not_null
       - name: passes_accuracy
-        description: Provider pass accuracy value cast from the raw string payload.
+        description: Provider `passes.accuracy` value cast from the raw string payload. API-Football reports this as completed passes even though the source field is named accuracy.
       - name: penalty_committed
         description: Penalties committed by the player; sourced from API-Football's `commited` field.
 

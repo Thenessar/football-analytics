@@ -188,7 +188,7 @@ models:
       - name: passes_key
         description: Provider key passes.
       - name: passes_accuracy
-        description: Provider pass accuracy percentage value cast from the raw string payload.
+        description: Provider `passes.accuracy` value cast from the raw string payload. API-Football reports this as completed passes even though the source field is named accuracy.
       - name: tackles_total
         description: Provider total tackles.
       - name: tackles_blocks
@@ -276,7 +276,7 @@ models:
         tests:
           - not_null
       - name: pass_accuracy_pct
-        description: Provider pass accuracy percentage exposed as a modeling feature.
+        description: Completed pass percentage calculated as provider `passes_accuracy` divided by total passes and multiplied by 100.
         tests:
           - not_null
       - name: duels_won_rate
