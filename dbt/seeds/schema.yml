@@ -11,3 +11,18 @@ seeds:
       - name: league_name
         tests:
           - not_null
+
+  - name: fifa_mens_world_ranking_december_2022
+    description: FIFA men's world ranking seed used as the initial national-team Elo baseline.
+    columns:
+      - name: Rank
+        tests:
+          - unique
+          - not_null
+      - name: Team
+        tests:
+          - unique
+          - not_null
+      - name: Raiting
+        tests:
+          - not_null
