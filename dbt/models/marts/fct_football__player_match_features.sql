@@ -207,3 +207,4 @@ select
     response_hash,
     current_timestamp() as updated_at_utc
 from featured
+where coalesce(games_minutes, 0) between 1 and 130

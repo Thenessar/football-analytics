@@ -262,6 +262,14 @@ def test_dbt_python_models_are_tagged_for_serverless_execution():
         assert "cluster_id:" not in model_block
 
 
+def test_player_match_feature_mart_keeps_only_played_appearances():
+    model_sql = (
+        ROOT / "dbt" / "models" / "marts" / "fct_football__player_match_features.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "where coalesce(games_minutes, 0) between 1 and 130" in model_sql
+
+
 def test_dbt_project_contains_expected_models_and_seed():
     dbt_root = ROOT / "dbt"
 
