@@ -48,6 +48,16 @@ def workspace_fs_path(path: str) -> str:
     return path
 
 
+def candidate_roots_from_workspace_path(path: str) -> list[str]:
+    workspace_path = PurePosixPath(workspace_fs_path(path).rstrip("/"))
+    candidates = [str(workspace_path)]
+    if workspace_path.name == "files":
+        candidates.append(str(workspace_path.parent))
+    elif workspace_path.suffix:
+        candidates.append(str(workspace_path.parent))
+    return candidates
+
+
 def notebook_root_candidate(context) -> str:
     notebook_path = option_value(context.notebookPath())
     if not notebook_path:
@@ -60,11 +70,15 @@ def find_dbt_project_dir(context) -> str:
     workspace_file_path = widget_value("workspace_file_path")
     candidates = []
     if workspace_file_path:
-        candidates.append(f"{workspace_fs_path(workspace_file_path).rstrip('/')}/dbt")
+        candidates.extend(
+            f"{candidate_root}/dbt"
+            for candidate_root in candidate_roots_from_workspace_path(workspace_file_path)
+        )
     root_candidate = notebook_root_candidate(context)
     if root_candidate:
         candidates.append(f"{root_candidate}/dbt")
 
+    candidates = list(dict.fromkeys(candidates))
     for candidate in candidates:
         if os.path.exists(f"{candidate}/dbt_project.yml"):
             return candidate
@@ -81,9 +95,9 @@ def workspace_root(context) -> str:
 
     workspace_file_path = widget_value("workspace_file_path")
     if workspace_file_path:
-        file_root = PurePosixPath(workspace_fs_path(workspace_file_path).rstrip("/"))
-        if file_root.name == "files":
-            return str(file_root.parent)
+        for candidate_root in candidate_roots_from_workspace_path(workspace_file_path):
+            if PurePosixPath(candidate_root).name != "files":
+                return candidate_root
 
     root_candidate = notebook_root_candidate(context)
     if root_candidate:
@@ -100,6 +114,16 @@ def required_value(name: str, value: str) -> str:
 
 def yaml_string(value: str) -> str:
     return json.dumps(value)
+
+
+def run_dbt_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        check=False,
+        stderr=subprocess.STDOUT,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
 
 
 context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
@@ -160,7 +184,7 @@ with tempfile.TemporaryDirectory(prefix="dbt-profiles-") as profiles_dir:
                     f"      schema: {yaml_string(silver_schema)}",
                     f"      host: {yaml_string(host)}",
                     f"      http_path: {yaml_string(http_path)}",
-                    f"      token: {yaml_string(token)}",
+                    "      token: \"{{ env_var('DATABRICKS_TOKEN') }}\"",
                     "      threads: 4",
                     "",
                 ]
@@ -169,8 +193,8 @@ with tempfile.TemporaryDirectory(prefix="dbt-profiles-") as profiles_dir:
 
     command = [
         sys.executable,
-        "-m",
-        "dbt",
+        "-c",
+        "from dbt.cli.main import cli; cli()",
         "build",
         "--project-dir",
         dbt_project_dir,
@@ -183,13 +207,8 @@ with tempfile.TemporaryDirectory(prefix="dbt-profiles-") as profiles_dir:
         "--no-use-colors",
     ]
     print("Running dbt Python models with selector: tag:python")
-    completed = subprocess.run(
-        command,
-        check=False,
-        stderr=subprocess.STDOUT,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
+    completed = run_dbt_command(command)
     print(completed.stdout)
     if completed.returncode != 0:
         raise RuntimeError(f"dbt Python model build failed with exit code {completed.returncode}")
+    print("Success! dbt Python models built successfully.")
