@@ -17,7 +17,7 @@ from football_analytics.ml_training import (
     poisson_log_loss,
     temporal_train_validation_split,
 )
-from scripts.train_poisson_lgbm import build_training_feature_frame
+from scripts.train_poisson_lgbm import REQUIRED_ELO_FEATURE_COLUMNS, build_training_feature_frame
 
 
 def _fixture(fixture_id, date, home_goals=1, away_goals=0):
@@ -54,6 +54,8 @@ def test_team_elo_snapshots_are_pre_match_and_chronological():
     assert second_home["team_elo_general_pre"] > first_home["team_elo_general_pre"]
     assert second_home["team_elo_attack_pre"] > first_home["team_elo_attack_pre"]
     assert second_home["expected_goals_for_pre"] > first_home["expected_goals_for_pre"]
+    assert first_home["team_elo_attack_post"] > first_home["team_elo_attack_pre"]
+    assert first_home["team_elo_defense_post"] > first_home["team_elo_defense_pre"]
 
 
 def test_player_modifier_decays_toward_current_team_baseline_after_inactivity():
@@ -174,6 +176,97 @@ def test_player_modifier_decays_toward_current_team_baseline_after_inactivity():
     assert new_callup["player_offensive_rating_pre"] == new_callup["team_elo_attack_pre"]
 
 
+def test_zero_minute_player_snapshot_decays_modifier_before_emit():
+    fixtures = pd.DataFrame([
+        _fixture(1, "2023-01-01T12:00:00Z", home_goals=1, away_goals=0),
+        _fixture(2, "2023-01-02T12:00:00Z", home_goals=1, away_goals=0),
+    ])
+    team_history = build_team_elo_history(fixtures)
+    appearances = pd.DataFrame([
+        {
+            "fixture_id": 1,
+            "fixture_date_utc": "2023-01-01T12:00:00Z",
+            "team_id": 1,
+            "team_name": "Team A",
+            "player_id": 10,
+            "player_name": "Explosive Winger",
+            "games_minutes": 90,
+            "shots_total": 5,
+            "shots_on": 2,
+            "dribbles_attempts": 4,
+            "goals_assists": 0,
+            "tackles_interceptions": 0,
+            "tackles_total": 0,
+            "fouls_committed": 0,
+        },
+        {
+            "fixture_id": 1,
+            "fixture_date_utc": "2023-01-01T12:00:00Z",
+            "team_id": 1,
+            "team_name": "Team A",
+            "player_id": 11,
+            "player_name": "Control Midfielder",
+            "games_minutes": 90,
+            "shots_total": 0,
+            "shots_on": 0,
+            "dribbles_attempts": 0,
+            "goals_assists": 0,
+            "tackles_interceptions": 0,
+            "tackles_total": 0,
+            "fouls_committed": 0,
+        },
+        {
+            "fixture_id": 2,
+            "fixture_date_utc": "2023-01-02T12:00:00Z",
+            "team_id": 1,
+            "team_name": "Team A",
+            "player_id": 10,
+            "player_name": "Explosive Winger",
+            "games_minutes": 0,
+            "shots_total": None,
+            "shots_on": None,
+            "dribbles_attempts": None,
+            "goals_assists": None,
+            "tackles_interceptions": None,
+            "tackles_total": None,
+            "fouls_committed": None,
+        },
+        {
+            "fixture_id": 2,
+            "fixture_date_utc": "2023-01-02T12:00:00Z",
+            "team_id": 1,
+            "team_name": "Team A",
+            "player_id": 11,
+            "player_name": "Control Midfielder",
+            "games_minutes": 90,
+            "shots_total": 0,
+            "shots_on": 0,
+            "dribbles_attempts": 0,
+            "goals_assists": 0,
+            "tackles_interceptions": 0,
+            "tackles_total": 0,
+            "fouls_committed": 0,
+        },
+    ])
+
+    player_history = build_player_elo_history(appearances, team_history)
+    inactive_snapshot = player_history[
+        (player_history["fixture_id"] == 2)
+        & (player_history["player_id"] == 10)
+    ].iloc[0]
+
+    post_first_match_modifier = 0.05 * ((5 + 0.5 * 2 + 0.35 * 4) - ((5 + 0.5 * 2 + 0.35 * 4) / 2))
+
+    assert inactive_snapshot["games_minutes"] == 0.0
+    assert inactive_snapshot["missed_fixture_count_pre"] == 1
+    assert inactive_snapshot["player_offensive_modifier_pre"] == pytest.approx(
+        post_first_match_modifier * 0.85
+    )
+    assert inactive_snapshot["player_offensive_elo_pre"] == pytest.approx(
+        inactive_snapshot["team_elo_attack_pre"] + inactive_snapshot["player_offensive_modifier_pre"]
+    )
+
+
 def test_structural_zero_imputation_and_null_guard():
     frame = pd.DataFrame({
         "shots_total": [None, 2],
@@ -223,100 +316,24 @@ def test_prepare_xy_allows_exposure_column_as_model_feature():
     assert exposure.tolist() == [0.5, 1.0]
 
 
-def test_training_script_enriches_feature_frame_with_elo_columns():
-    fixtures = pd.DataFrame([
-        _fixture(1, "2023-01-01T12:00:00Z", home_goals=2, away_goals=0),
-        _fixture(2, "2023-01-08T12:00:00Z", home_goals=1, away_goals=1),
-    ])
-    rankings = pd.DataFrame([
-        {"Team": "Team A", "Raiting": 1600.0},
-        {"Team": "Team B", "Raiting": 1500.0},
-    ])
-    feature_frame = pd.DataFrame([
-        {
-            "fixture_id": 1,
-            "fixture_date_utc": "2023-01-01T12:00:00Z",
-            "team_id": 1,
-            "team_name": "Team A",
-            "player_id": 10,
-            "player_name": "Explosive Winger",
-            "games_minutes": 90,
-            "shots_total": 4,
-            "shots_on": 2,
-            "dribbles_attempts": 3,
-            "goals_assists": 0,
-            "tackles_interceptions": 0,
-            "fouls_committed": 0,
-            "team_elo_general_pre": -999.0,
-        },
-        {
-            "fixture_id": 1,
-            "fixture_date_utc": "2023-01-01T12:00:00Z",
-            "team_id": 2,
-            "team_name": "Team B",
-            "player_id": 20,
-            "player_name": "Defender",
-            "games_minutes": 90,
-            "shots_total": 0,
-            "shots_on": 0,
-            "dribbles_attempts": 0,
-            "goals_assists": 0,
-            "tackles_interceptions": 2,
-            "fouls_committed": 1,
-            "team_elo_general_pre": -999.0,
-        },
-        {
-            "fixture_id": 2,
-            "fixture_date_utc": "2023-01-08T12:00:00Z",
-            "team_id": 1,
-            "team_name": "Team A",
-            "player_id": 10,
-            "player_name": "Explosive Winger",
-            "games_minutes": 90,
-            "shots_total": 1,
-            "shots_on": 0,
-            "dribbles_attempts": 1,
-            "goals_assists": 0,
-            "tackles_interceptions": 0,
-            "fouls_committed": 0,
-            "team_elo_general_pre": -999.0,
-        },
-        {
-            "fixture_id": 2,
-            "fixture_date_utc": "2023-01-08T12:00:00Z",
-            "team_id": 2,
-            "team_name": "Team B",
-            "player_id": 20,
-            "player_name": "Defender",
-            "games_minutes": 90,
-            "shots_total": 0,
-            "shots_on": 0,
-            "dribbles_attempts": 0,
-            "goals_assists": 0,
-            "tackles_interceptions": 1,
-            "fouls_committed": 1,
-            "team_elo_general_pre": -999.0,
-        },
-    ])
+def test_training_script_requires_dbt_materialized_elo_columns():
+    feature_frame = pd.DataFrame([{
+        "fixture_id": 1,
+        "fixture_date_utc": "2023-01-01T12:00:00Z",
+        "team_id": 1,
+        "player_id": 10,
+        "games_minutes": 90,
+    }])
 
-    enriched = build_training_feature_frame(
-        feature_frame,
-        fixtures_frame=fixtures,
-        rankings_frame=rankings,
-        decay_alpha=0.85,
+    with pytest.raises(ValueError, match="dbt-materialized ELO"):
+        build_training_feature_frame(feature_frame)
+
+    enriched_feature_frame = feature_frame.assign(
+        **{column: 0.0 for column in REQUIRED_ELO_FEATURE_COLUMNS}
     )
-    first_team_a = enriched[
-        (enriched["fixture_id"] == 1) & (enriched["team_id"] == 1)
-    ].iloc[0]
-    second_team_a = enriched[
-        (enriched["fixture_id"] == 2) & (enriched["team_id"] == 1)
-    ].iloc[0]
+    training_frame = build_training_feature_frame(enriched_feature_frame)
 
-    assert first_team_a["team_elo_general_pre"] == 1550.0
-    assert first_team_a["team_elo_general_pre"] != -999.0
-    assert second_team_a["team_elo_attack_pre"] > first_team_a["team_elo_attack_pre"]
-    assert "player_offensive_modifier_pre" in enriched.columns
-    assert "player_offensive_rating_pre" in enriched.columns
+    assert training_frame.equals(enriched_feature_frame)
 
 
 def test_assemble_hierarchical_feature_frame_overwrites_stale_elo_columns():

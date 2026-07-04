@@ -54,8 +54,7 @@ models:
       - name: player_photo_url
         description: API-Football player photo URL.
       - name: games_minutes
-        tests:
-          - not_null
+        description: Minutes reported by the provider; NULL is preserved here and treated as inactive time in downstream feature models.
       - name: games_number
         description: Shirt number reported in the fixture player statistics payload.
       - name: games_rating

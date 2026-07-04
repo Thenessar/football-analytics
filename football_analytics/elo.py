@@ -309,8 +309,17 @@ def build_team_elo_history(
                 "expected_goals_against_pre": home_lambda,
             },
         ])
+        snapshot_start = len(snapshots) - 2
 
         if pd.isna(row["home_goals"]) or pd.isna(row["away_goals"]):
+            snapshots[snapshot_start].update({
+                "team_elo_attack_post": home.elo_attack,
+                "team_elo_defense_post": home.elo_defense,
+            })
+            snapshots[snapshot_start + 1].update({
+                "team_elo_attack_post": away.elo_attack,
+                "team_elo_defense_post": away.elo_defense,
+            })
             continue
 
         home_goals = float(row["home_goals"])
@@ -338,6 +347,15 @@ def build_team_elo_history(
         away.elo_defense = float(np.clip(away.elo_defense - lr * home_residual, -state_clip, state_clip))
         away.elo_attack = float(np.clip(away.elo_attack + lr * away_residual, -state_clip, state_clip))
         home.elo_defense = float(np.clip(home.elo_defense - lr * away_residual, -state_clip, state_clip))
+
+        snapshots[snapshot_start].update({
+            "team_elo_attack_post": home.elo_attack,
+            "team_elo_defense_post": home.elo_defense,
+        })
+        snapshots[snapshot_start + 1].update({
+            "team_elo_attack_post": away.elo_attack,
+            "team_elo_defense_post": away.elo_defense,
+        })
 
     return pd.DataFrame(snapshots)
 
@@ -489,15 +507,14 @@ def build_player_elo_history(
         )
         apps = grouped_apps.get(fixture_key, pd.DataFrame())
         if apps.empty:
-            active_players: set[str] = set()
+            present_players: set[str] = set()
         else:
-            active_players = {
+            present_players = {
                 _clean_key(row["player_id"], row["player_name"])
                 for _, row in apps.iterrows()
-                if _optional_float(row, "games_minutes", 0.0) > 0
             }
 
-        for player_key in sorted(team_rosters[team_key].difference(active_players)):
+        for player_key in sorted(team_rosters[team_key].difference(present_players)):
             state = states[(team_key, player_key)]
             state.offensive_modifier *= decay_alpha
             state.defensive_modifier *= decay_alpha
@@ -507,23 +524,39 @@ def build_player_elo_history(
             continue
 
         active_apps = apps[apps["games_minutes"] > 0].copy()
+        inactive_apps = apps[apps["games_minutes"] <= 0].copy()
         if active_apps.empty:
-            continue
-
-        team_off_avg = float(
-            np.average(
-                active_apps["player_offensive_signal_p90"],
-                weights=active_apps["games_minutes"].clip(lower=1.0),
+            team_off_avg = 0.0
+            team_def_avg = 0.0
+        else:
+            team_off_avg = float(
+                np.average(
+                    active_apps["player_offensive_signal_p90"],
+                    weights=active_apps["games_minutes"].clip(lower=1.0),
+                )
             )
-        )
-        team_def_avg = float(
-            np.average(
-                active_apps["player_defensive_signal_p90"],
-                weights=active_apps["games_minutes"].clip(lower=1.0),
+            team_def_avg = float(
+                np.average(
+                    active_apps["player_defensive_signal_p90"],
+                    weights=active_apps["games_minutes"].clip(lower=1.0),
+                )
             )
-        )
 
-        for _, app_row in active_apps.sort_values(["player_id", "player_name"]).iterrows():
+        for _, app_row in inactive_apps.sort_values(["player_id", "player_name"]).iterrows():
+            player_key = _clean_key(app_row["player_id"], app_row["player_name"])
+            state = _get_player_state(
+                states,
+                team_key=team_key,
+                player_id=app_row["player_id"],
+                player_name=app_row["player_name"],
+            )
+            if player_key in team_rosters[team_key]:
+                state.offensive_modifier *= decay_alpha
+                state.defensive_modifier *= decay_alpha
+                state.missed_fixture_count += 1
+            team_rosters[team_key].add(player_key)
+
+        for _, app_row in apps.sort_values(["player_id", "player_name"]).iterrows():
             player_key = _clean_key(app_row["player_id"], app_row["player_name"])
             state = _get_player_state(
                 states,
@@ -546,6 +579,12 @@ def build_player_elo_history(
                 "team_elo_defense_pre": float(team_row["team_elo_defense_pre"]),
                 "player_offensive_modifier_pre": float(state.offensive_modifier),
                 "player_defensive_modifier_pre": float(state.defensive_modifier),
+                "player_offensive_elo_pre": float(
+                    team_row["team_elo_attack_pre"] + state.offensive_modifier
+                ),
+                "player_defensive_elo_pre": float(
+                    team_row["team_elo_defense_pre"] + state.defensive_modifier
+                ),
                 "player_offensive_rating_pre": float(
                     team_row["team_elo_attack_pre"] + state.offensive_modifier
                 ),
@@ -558,6 +597,9 @@ def build_player_elo_history(
                 "team_offensive_signal_p90": team_off_avg,
                 "team_defensive_signal_p90": team_def_avg,
             })
+
+        if active_apps.empty:
+            continue
 
         for _, app_row in active_apps.iterrows():
             state = _get_player_state(
@@ -630,6 +672,8 @@ def assemble_hierarchical_feature_frame(
             "player_id",
             "player_offensive_modifier_pre",
             "player_defensive_modifier_pre",
+            "player_offensive_elo_pre",
+            "player_defensive_elo_pre",
             "player_offensive_rating_pre",
             "player_defensive_rating_pre",
             "missed_fixture_count_pre",
@@ -664,6 +708,14 @@ def assemble_hierarchical_feature_frame(
         )
     if "player_defensive_rating_pre" in out and "team_elo_defense_pre" in out:
         out["player_defensive_rating_pre"] = out["player_defensive_rating_pre"].fillna(
+            out["team_elo_defense_pre"]
+        )
+    if "player_offensive_elo_pre" in out and "team_elo_attack_pre" in out:
+        out["player_offensive_elo_pre"] = out["player_offensive_elo_pre"].fillna(
+            out["team_elo_attack_pre"]
+        )
+    if "player_defensive_elo_pre" in out and "team_elo_defense_pre" in out:
+        out["player_defensive_elo_pre"] = out["player_defensive_elo_pre"].fillna(
             out["team_elo_defense_pre"]
         )
 

@@ -77,7 +77,6 @@ typed as (
         current_timestamp() as updated_at_utc
     from flattened
     where player_entry.player.id is not null
-      and cast(stat_entry.games.minutes as int) > 0
 ),
 
 deduped as (

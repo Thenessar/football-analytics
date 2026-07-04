@@ -129,4 +129,5 @@ resources:
           spec:
             environment_version: ${var.serverless_environment_version}
             dependencies:
+              - ${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl
               - dbt-databricks>=1.8.0

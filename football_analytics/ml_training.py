@@ -41,9 +41,11 @@ DEFAULT_LIGHTGBM_FEATURES = [
     "expected_goals_against_pre",
     "player_offensive_modifier_pre",
     "player_defensive_modifier_pre",
-    "player_offensive_rating_pre",
-    "player_defensive_rating_pre",
+    "player_offensive_elo_pre",
+    "player_defensive_elo_pre",
     "missed_fixture_count_pre",
+    "team_lineup_attack_strength",
+    "team_lineup_defense_strength",
 ]
 
 
@@ -72,7 +74,6 @@ class PoissonLightGBMConfig:
     bagging_fraction: float = 0.85
     bagging_freq: int = 1
     lambda_l2: float = 0.0
-    decay_alpha: float = 0.85
     random_state: int = 42
     lightgbm_extra_params: Mapping[str, Any] = field(default_factory=dict)
 
@@ -100,7 +101,6 @@ class PoissonLightGBMConfig:
             "min_child_samples": self.min_child_samples,
             "num_boost_round": self.num_boost_round,
             "feature_columns": json.dumps(list(feature_columns)),
-            "decay_alpha": self.decay_alpha,
         }
 
 
