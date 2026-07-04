@@ -10,6 +10,7 @@ from football_analytics.elo import (
     coalesce_structural_event_zeros,
 )
 from football_analytics.ml_training import (
+    _prepare_xy,
     count_threshold_probabilities,
     evaluate_count_predictions,
     poisson_log_loss,
@@ -199,6 +200,25 @@ def test_poisson_metrics_and_threshold_distribution_are_count_safe():
     assert distribution["mean"] == 1.64
     assert distribution["p_ge_1"] == pytest.approx(1.0 - math.exp(-1.64))
     assert 0.0 < distribution["p_ge_2"] < distribution["p_ge_1"] < 1.0
+
+
+def test_prepare_xy_allows_exposure_column_as_model_feature():
+    frame = pd.DataFrame({
+        "shots_total": [0, 2],
+        "games_minutes": [45, 90],
+        "is_starter": [0, 1],
+    })
+
+    X, y, exposure = _prepare_xy(
+        frame,
+        target_column="shots_total",
+        feature_columns=["games_minutes", "is_starter", "games_minutes"],
+        exposure_column="games_minutes",
+    )
+
+    assert X.columns.tolist() == ["games_minutes", "is_starter"]
+    assert y.tolist() == [0.0, 2.0]
+    assert exposure.tolist() == [0.5, 1.0]
 
 
 def test_temporal_train_validation_split_keeps_future_rows_out_of_train():
