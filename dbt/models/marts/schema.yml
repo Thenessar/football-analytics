@@ -304,6 +304,122 @@ models:
       - name: defensive_elo
         description: Context defensive Elo-like baseline for the opponent matchup.
 
+  - name: fct_football__team_elo_history
+    description: Chronological point-in-time team Elo history. One row represents one team in one fixture; `_pre` values are emitted before the match update and `_post` values are the state carried into the next fixture.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: opponent_team_id
+        tests:
+          - not_null
+      - name: team_elo_attack_pre
+        tests:
+          - not_null
+      - name: team_elo_defense_pre
+        tests:
+          - not_null
+      - name: opponent_elo_attack_pre
+        tests:
+          - not_null
+      - name: opponent_elo_defense_pre
+        tests:
+          - not_null
+      - name: team_elo_attack_post
+        tests:
+          - not_null
+      - name: team_elo_defense_post
+        tests:
+          - not_null
+
+  - name: fct_football__player_elo_history
+    description: Chronological player Elo history with player modifiers anchored to the current national-team attack and defense baseline.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: player_id
+        tests:
+          - not_null
+      - name: games_minutes
+        tests:
+          - not_null
+      - name: player_offensive_elo_pre
+        tests:
+          - not_null
+      - name: player_defensive_elo_pre
+        tests:
+          - not_null
+      - name: player_offensive_modifier_pre
+        tests:
+          - not_null
+      - name: player_defensive_modifier_pre
+        tests:
+          - not_null
+      - name: missed_fixture_count_pre
+        tests:
+          - not_null
+
+  - name: fct_football__lineup_elo_strength
+    description: Confirmed starting XI Elo strength. Bench players are excluded; only complete 11-player starting lineups are materialized.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: starting_xi_attack_elo
+        tests:
+          - not_null
+      - name: starting_xi_defense_elo
+        tests:
+          - not_null
+      - name: starting_xi_player_count
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [11]
+                quote: false
+
   - name: dim_football__rating_baseline
     description: Gold model-ready FIFA ranking baseline with normalized team names.
     columns:
@@ -378,6 +494,24 @@ models:
         tests:
           - not_null
       - name: shots_on_per_90
+        tests:
+          - not_null
+      - name: team_elo_attack_pre
+        tests:
+          - not_null
+      - name: opponent_elo_defense_pre
+        tests:
+          - not_null
+      - name: player_offensive_elo_pre
+        tests:
+          - not_null
+      - name: player_defensive_elo_pre
+        tests:
+          - not_null
+      - name: team_lineup_attack_strength
+        tests:
+          - not_null
+      - name: team_lineup_defense_strength
         tests:
           - not_null
 

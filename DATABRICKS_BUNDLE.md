@@ -32,7 +32,7 @@ databricks bundle deploy -t dev --var="sql_warehouse_id=<warehouse-id>"
 databricks bundle run international_medallion_pipeline -t dev --var="sql_warehouse_id=<warehouse-id>"
 ```
 
-The bundle builds the local `football_analytics` package as a wheel during deploy and installs that wheel on each notebook task. This makes imports such as `from football_analytics.databricks.config import ...` available in the serverless job environment.
+The bundle builds the local `football_analytics` package as a wheel during deploy and installs that wheel on notebook and dbt tasks. This makes imports such as `from football_analytics.databricks.config import ...` available in the serverless job environment and lets dbt Python models reuse the shared chronological ELO implementation.
 
 If you authenticated with a named profile, add `-p <profile-name>` to each command.
 
@@ -53,7 +53,7 @@ dbt seed
 dbt build
 ```
 
-`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze. `dbt seed` materializes shared reference data such as the senior men's international league allowlist; `dbt build` excludes seeds and runs transformations/tests. Silver staging models and Gold mart models live under `dbt/models`.
+`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze. `dbt seed` materializes shared reference data such as the senior men's international league allowlist; `dbt build` excludes seeds and runs transformations/tests. Silver staging models and Gold mart models live under `dbt/models`, including Python models that materialize point-in-time team and player ELO history before downstream SQL marts consume those features.
 
 The bundled workflow is configured for Free Edition/serverless-style execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment. dbt task `catalog` and `schema` are deploy-time bundle variables, not `{{job.parameters.*}}` runtime references, because Databricks validates those fields during job deployment.
 The dbt task environment defaults to serverless environment version `4`; override `serverless_environment_version` if your workspace requires a different supported version.

@@ -131,6 +131,7 @@ def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
     assert "path: ." in bundle_config
     assert "environment_key: notebook_serverless" in job
     assert "${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl" in job
+    assert "environment_key: dbt_serverless" in job
 
     for task_name in ("prepare_run", "bronze_ingest"):
         match = re.search(
@@ -141,6 +142,14 @@ def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
         assert match is not None
         assert "environment_key: notebook_serverless" in match.group("task")
         assert "libraries:" not in match.group("task")
+
+    dbt_environment = re.search(
+        r"- environment_key: dbt_serverless\b(?P<environment>.*?)(?=\n        - environment_key:|\Z)",
+        job,
+        flags=re.S,
+    )
+    assert dbt_environment is not None
+    assert "${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl" in dbt_environment.group("environment")
 
 
 def test_production_bundle_uses_stable_workspace_root_path():
@@ -203,6 +212,9 @@ def test_dbt_project_contains_expected_models_and_seed():
         "models/staging/stg_football__lineups.sql",
         "models/marts/fct_football__team_match_context.sql",
         "models/marts/dim_football__rating_baseline.sql",
+        "models/marts/fct_football__team_elo_history.py",
+        "models/marts/fct_football__player_elo_history.py",
+        "models/marts/fct_football__lineup_elo_strength.sql",
         "models/marts/fct_football__player_shot_features.sql",
         "models/marts/fct_football__player_sapm.sql",
         "seeds/senior_mens_international_leagues.csv",
@@ -210,7 +222,11 @@ def test_dbt_project_contains_expected_models_and_seed():
     ):
         assert (dbt_root / expected).exists()
 
-    model_sql = "\n".join(path.read_text(encoding="utf-8") for path in (dbt_root / "models").rglob("*.sql"))
+    model_sql = "\n".join(
+        path.read_text(encoding="utf-8")
+        for pattern in ("*.sql", "*.py")
+        for path in (dbt_root / "models").rglob(pattern)
+    )
     for expected_ref in (
         "source('bronze', 'football_fixtures_raw')",
         "source('bronze', 'football_match_raw')",
@@ -218,6 +234,9 @@ def test_dbt_project_contains_expected_models_and_seed():
         "ref('stg_football__fixtures')",
         "ref('stg_football__player_match_stats')",
         "ref('fct_football__team_match_context')",
+        "ref('fct_football__team_elo_history')",
+        "ref('fct_football__player_elo_history')",
+        "ref('fct_football__lineup_elo_strength')",
         "ref('senior_mens_international_leagues')",
     ):
         assert expected_ref in model_sql
