@@ -611,6 +611,12 @@ def assemble_hierarchical_feature_frame(
         "expected_goals_against_pre",
     ]
     existing_team_columns = [column for column in team_columns if column in team_elo_history_df.columns]
+    team_payload_columns = [
+        column
+        for column in existing_team_columns
+        if column not in {"fixture_id", "team_id"}
+    ]
+    out = out.drop(columns=[column for column in team_payload_columns if column in out.columns])
     out = out.merge(
         team_elo_history_df[existing_team_columns],
         on=["fixture_id", "team_id"],
@@ -631,6 +637,12 @@ def assemble_hierarchical_feature_frame(
         existing_player_columns = [
             column for column in player_columns if column in player_elo_history_df.columns
         ]
+        player_payload_columns = [
+            column
+            for column in existing_player_columns
+            if column not in {"fixture_id", "team_id", "player_id"}
+        ]
+        out = out.drop(columns=[column for column in player_payload_columns if column in out.columns])
         out = out.merge(
             player_elo_history_df[existing_player_columns],
             on=["fixture_id", "team_id", "player_id"],
