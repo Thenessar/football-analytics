@@ -306,6 +306,13 @@ models:
 
   - name: fct_football__team_elo_history
     description: Chronological point-in-time team Elo history. One row represents one team in one fixture; `_pre` values are emitted before the match update and `_post` values are the state carried into the next fixture.
+    config:
+      tags:
+        - python
+      submission_method: serverless_cluster
+      environment_key: dbt_python_serverless
+      environment_dependencies:
+        - "{{ env_var('DBT_WORKSPACE_ROOT_PATH', '') }}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl"
     tests:
       - unique_combination_of_columns:
           arguments:
@@ -347,6 +354,13 @@ models:
 
   - name: fct_football__player_elo_history
     description: Chronological player Elo history with player modifiers anchored to the current national-team attack and defense baseline.
+    config:
+      tags:
+        - python
+      submission_method: serverless_cluster
+      environment_key: dbt_python_serverless
+      environment_dependencies:
+        - "{{ env_var('DBT_WORKSPACE_ROOT_PATH', '') }}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl"
     tests:
       - unique_combination_of_columns:
           arguments:

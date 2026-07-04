@@ -116,7 +116,35 @@ resources:
             catalog: ${var.catalog}
             schema: ${var.silver_schema}
             commands:
-              - "dbt build --exclude resource_type:seed --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
+              - "dbt build --exclude resource_type:seed tag:python+ --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
+          environment_key: dbt_serverless
+
+        - task_key: dbt_python_models
+          depends_on:
+            - task_key: dbt_build
+          notebook_task:
+            notebook_path: ../notebooks/02_dbt_python_models.py
+            base_parameters:
+              workspace_root_path: ${workspace.root_path}
+              workspace_file_path: ${workspace.root_path}/files
+              sql_warehouse_id: ${var.sql_warehouse_id}
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+          environment_key: dbt_serverless
+
+        - task_key: dbt_build_python_dependents
+          depends_on:
+            - task_key: dbt_python_models
+          dbt_task:
+            project_directory: ../dbt
+            source: WORKSPACE
+            warehouse_id: ${var.sql_warehouse_id}
+            catalog: ${var.catalog}
+            schema: ${var.silver_schema}
+            commands:
+              - "dbt build --select tag:python+ --exclude tag:python resource_type:seed --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
           environment_key: dbt_serverless
 
       environments:

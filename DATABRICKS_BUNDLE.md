@@ -50,12 +50,16 @@ The Databricks job keeps operational ingestion in Python and runs deterministic 
 01_bronze_ingest.py
 dbt deps
 dbt seed
-dbt build
+dbt build --exclude tag:python+
+02_dbt_python_models.py
+dbt build --select tag:python+ --exclude tag:python
 ```
 
-`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze. `dbt seed` materializes shared reference data such as the senior men's international league allowlist; `dbt build` excludes seeds and runs transformations/tests. Silver staging models and Gold mart models live under `dbt/models`, including Python models that materialize point-in-time team and player ELO history before downstream SQL marts consume those features.
+`00_prepare_run.py` creates target schemas only. `01_bronze_ingest.py` lands raw API-Football payloads and checkpoint state in Bronze. `dbt seed` materializes shared reference data such as the senior men's international league allowlist. The first warehouse `dbt build` excludes seeds plus `tag:python+`, so it builds upstream SQL models without touching Python models or Python-dependent marts. `02_dbt_python_models.py` runs as a serverless notebook task and builds only `tag:python` models: `fct_football__team_elo_history` and `fct_football__player_elo_history`. Those Python models use dbt-databricks serverless Python submission, so no all-purpose cluster ID is required. The final warehouse `dbt build` selects `tag:python+` while excluding the Python-tagged models themselves, refreshing SQL descendants such as lineup Elo strength and player shot features after fresh Elo tables exist.
 
-The bundled workflow is configured for Free Edition/serverless-style execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment. dbt task `catalog` and `schema` are deploy-time bundle variables, not `{{job.parameters.*}}` runtime references, because Databricks validates those fields during job deployment.
+Silver staging models and Gold mart models live under `dbt/models`, including Python models that materialize point-in-time team and player ELO history before downstream SQL marts consume those features.
+
+The bundled workflow is configured for serverless workflow execution: notebook tasks omit cluster settings so they run on serverless workflow compute, and SQL dbt tasks use the supplied serverless SQL warehouse plus a lightweight dbt serverless environment. dbt task `catalog` and `schema` are deploy-time bundle variables, not `{{job.parameters.*}}` runtime references, because Databricks validates those fields during job deployment.
 The dbt task environment defaults to serverless environment version `4`; override `serverless_environment_version` if your workspace requires a different supported version.
 
 Historical backfills use these widgets:
@@ -92,5 +96,7 @@ Use vars to point at non-default Unity Catalog schemas:
 dbt seed --project-dir dbt --vars "{catalog: football_analytics, bronze_schema: bronze_dev, silver_schema: silver_dev, gold_schema: gold_dev}"
 dbt build --project-dir dbt --exclude resource_type:seed --vars "{catalog: football_analytics, bronze_schema: bronze_dev, silver_schema: silver_dev, gold_schema: gold_dev}"
 ```
+
+The Python models are tagged with `python` and use dbt-databricks `serverless_cluster` submission. Locally, use `dbt build --select tag:python` only when your profile points at Databricks and `DBT_WORKSPACE_ROOT_PATH` points at a deployed bundle root containing the project wheel.
 
 If Databricks credentials or a SQL warehouse are unavailable locally, validate with `pytest -q` and `dbt parse` where possible, then run bundle validation/deploy from an authenticated Databricks CLI session.

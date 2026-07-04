@@ -60,23 +60,53 @@ def test_bundle_passes_catalog_schema_parameters_to_table_aware_tasks():
 def test_bundle_runs_dbt_after_bronze_ingestion():
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
 
-    for task_name in ("dbt_deps", "dbt_seed", "dbt_build"):
+    for task_name in (
+        "dbt_deps",
+        "dbt_seed",
+        "dbt_build",
+        "dbt_python_models",
+        "dbt_build_python_dependents",
+    ):
         assert f"task_key: {task_name}" in bundle
 
     assert "dbt deps" in bundle
     assert "dbt seed" in bundle
     assert "dbt build" in bundle
     assert "warehouse_id: ${var.sql_warehouse_id}" in bundle
+    assert "existing_cluster_id:" not in bundle
+    assert "dbt_python_cluster_id" not in bundle
     assert "environment_key: dbt_serverless" in bundle
     assert "environment_version: ${var.serverless_environment_version}" in bundle
     assert "dbt-databricks>=1.8.0" in bundle
     assert "bronze_schema: \\\"{{job.parameters.bronze_schema}}\\\"" in bundle
     assert "silver_schema: \\\"{{job.parameters.silver_schema}}\\\"" in bundle
     assert "gold_schema: \\\"{{job.parameters.gold_schema}}\\\"" in bundle
-    assert bundle.count("catalog: ${var.catalog}") == 3
-    assert bundle.count("schema: ${var.silver_schema}") == 3
-    assert "dbt build --exclude resource_type:seed" in bundle
-    for task_name in ("dbt_deps", "dbt_seed", "dbt_build"):
+    assert bundle.count("catalog: ${var.catalog}") == 4
+    assert bundle.count("schema: ${var.silver_schema}") == 4
+    assert "dbt build --exclude resource_type:seed tag:python+" in bundle
+    assert "dbt build --select tag:python+ --exclude tag:python resource_type:seed" in bundle
+    assert "../notebooks/02_dbt_python_models.py" in bundle
+
+    python_task = re.search(
+        r"- task_key: dbt_python_models\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+        bundle,
+        flags=re.S,
+    ).group("task")
+    assert "- task_key: dbt_build" in python_task
+    assert "notebook_task:" in python_task
+    assert "sql_warehouse_id: ${var.sql_warehouse_id}" in python_task
+    assert "environment_key: dbt_serverless" in python_task
+    assert "libraries:" not in python_task
+    assert "existing_cluster_id:" not in python_task
+
+    downstream_task = re.search(
+        r"- task_key: dbt_build_python_dependents\b(?P<task>.*?)(?=\n      environments:|\Z)",
+        bundle,
+        flags=re.S,
+    ).group("task")
+    assert "- task_key: dbt_python_models" in downstream_task
+
+    for task_name in ("dbt_deps", "dbt_seed", "dbt_build", "dbt_build_python_dependents"):
         task_block = re.search(
             rf"- task_key: {task_name}\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
             bundle,
@@ -143,6 +173,15 @@ def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():
         assert "environment_key: notebook_serverless" in match.group("task")
         assert "libraries:" not in match.group("task")
 
+    python_task = re.search(
+        r"- task_key: dbt_python_models\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+        job,
+        flags=re.S,
+    )
+    assert python_task is not None
+    assert "environment_key: dbt_serverless" in python_task.group("task")
+    assert "libraries:" not in python_task.group("task")
+
     dbt_environment = re.search(
         r"- environment_key: dbt_serverless\b(?P<environment>.*?)(?=\n        - environment_key:|\Z)",
         job,
@@ -165,6 +204,7 @@ def test_databricks_notebook_files_match_medallion_order():
     assert notebook_names == [
         "00_prepare_run.py",
         "01_bronze_ingest.py",
+        "02_dbt_python_models.py",
     ]
 
 
@@ -175,6 +215,7 @@ def test_bundle_references_renamed_notebooks_and_job():
         "international_medallion_pipeline",
         "../notebooks/00_prepare_run.py",
         "../notebooks/01_bronze_ingest.py",
+        "../notebooks/02_dbt_python_models.py",
     ):
         assert expected in bundle
 
@@ -191,11 +232,34 @@ def test_bundle_references_renamed_notebooks_and_job():
         "../notebooks/03_gold_build.py",
         "../notebooks/04_quality_checks.py",
         "existing_cluster_id",
+        "dbt_python_cluster_id",
         "league_id",
         "season",
         "load_rankings_seed",
     ):
         assert stale not in bundle
+
+
+def test_dbt_python_models_are_tagged_for_serverless_execution():
+    schema = (ROOT / "dbt" / "models" / "marts" / "schema.yml").read_text(encoding="utf-8")
+
+    for model_name in (
+        "fct_football__team_elo_history",
+        "fct_football__player_elo_history",
+    ):
+        match = re.search(
+            rf"- name: {model_name}\b(?P<model>.*?)(?=\n  - name:|\Z)",
+            schema,
+            flags=re.S,
+        )
+        assert match is not None
+        model_block = match.group("model")
+        assert "tags:" in model_block
+        assert "- python" in model_block
+        assert "submission_method: serverless_cluster" in model_block
+        assert "environment_key: dbt_python_serverless" in model_block
+        assert "DBT_WORKSPACE_ROOT_PATH" in model_block
+        assert "cluster_id:" not in model_block
 
 
 def test_dbt_project_contains_expected_models_and_seed():
@@ -264,10 +328,13 @@ def test_current_databricks_docs_do_not_describe_pipeline_as_world_cup_only():
         "01_bronze_ingest.py",
         "dbt deps",
         "dbt seed",
-        "dbt build",
+        "dbt build --exclude tag:python+",
+        "02_dbt_python_models.py",
+        "dbt build --select tag:python+ --exclude tag:python",
     ):
         assert flow_step in docs
 
     assert "`00_prepare_run.py` creates target schemas only" in docs
     assert "Silver staging models and Gold mart models live under `dbt/models`" in docs
-    assert "Free Edition/serverless-style execution" in docs
+    assert "serverless workflow execution" in docs
+    assert "no all-purpose cluster ID is required" in docs
