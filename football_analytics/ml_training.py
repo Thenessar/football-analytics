@@ -47,6 +47,19 @@ DEFAULT_LIGHTGBM_FEATURES = [
 ]
 
 
+def _unique_preserve_order(values: Iterable[str]) -> list[str]:
+    """Returns values once, keeping the first occurrence order."""
+
+    seen = set()
+    unique = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
 @dataclass
 class PoissonLightGBMConfig:
     """Training parameters logged to MLflow and reused at inference."""
@@ -122,6 +135,13 @@ class ExposurePoissonLightGBMModel:
 def exposure_from_minutes(minutes: Iterable[float]) -> np.ndarray:
     """Converts minutes played into positive 90-minute exposure units."""
 
+    if isinstance(minutes, pd.DataFrame):
+        if minutes.shape[1] != 1:
+            raise ValueError(
+                "Exposure input must be 1-dimensional; "
+                f"received DataFrame with shape {minutes.shape}"
+            )
+        minutes = minutes.iloc[:, 0]
     values = pd.to_numeric(pd.Series(minutes), errors="coerce").fillna(0.0).to_numpy(dtype=float)
     return np.clip(values / 90.0, 1e-6, None)
 
@@ -172,7 +192,7 @@ def _select_available_features(
     frame: pd.DataFrame,
     feature_columns: Optional[Sequence[str]],
 ) -> list[str]:
-    requested = list(feature_columns or DEFAULT_LIGHTGBM_FEATURES)
+    requested = _unique_preserve_order(feature_columns or DEFAULT_LIGHTGBM_FEATURES)
     selected = [column for column in requested if column in frame.columns]
     if not selected:
         raise ValueError("No requested feature columns exist in the training frame")
@@ -186,13 +206,16 @@ def _prepare_xy(
     feature_columns: Sequence[str],
     exposure_column: str,
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
-    missing = [column for column in [target_column, exposure_column, *feature_columns] if column not in frame]
+    selected_features = _unique_preserve_order(feature_columns)
+    required_columns = _unique_preserve_order([target_column, exposure_column, *selected_features])
+    missing = [column for column in required_columns if column not in frame]
     if missing:
         raise ValueError(f"Training frame is missing columns: {', '.join(missing)}")
 
-    subset = frame[[target_column, exposure_column, *feature_columns]].copy()
+    subset = frame[required_columns].copy()
+    subset = subset.loc[:, ~subset.columns.duplicated()].copy()
     subset = subset.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    X = subset[list(feature_columns)]
+    X = subset[selected_features]
     y = subset[target_column].clip(lower=0.0).to_numpy(dtype=float)
     exposure = exposure_from_minutes(subset[exposure_column])
     return X, y, exposure
