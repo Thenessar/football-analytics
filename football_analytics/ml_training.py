@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
+import inspect
 import json
 import math
 import pickle
@@ -354,6 +355,26 @@ def _log_shap_artifacts(
         )
 
 
+def _lightgbm_log_model_kwargs(
+    log_model_fn: Any,
+    *,
+    model_name: str,
+    registered_model_name: str,
+    input_example: pd.DataFrame,
+    signature: Any,
+) -> Dict[str, Any]:
+    """Builds MLflow LightGBM logging kwargs across MLflow 2.x/3.x APIs."""
+
+    parameters = inspect.signature(log_model_fn).parameters
+    name_arg = "name" if "name" in parameters else "artifact_path"
+    return {
+        name_arg: model_name,
+        "registered_model_name": registered_model_name,
+        "input_example": input_example,
+        "signature": signature,
+    }
+
+
 def train_poisson_lightgbm_with_mlflow(
     train_df: pd.DataFrame,
     validation_df: pd.DataFrame,
@@ -376,6 +397,7 @@ def train_poisson_lightgbm_with_mlflow(
     try:
         import lightgbm as lgb
         import mlflow
+        from mlflow.models import infer_signature
     except ImportError as exc:  # pragma: no cover - exercised in Databricks
         raise RuntimeError(
             "LightGBM and MLflow are required for training. Install the "
@@ -473,10 +495,18 @@ def train_poisson_lightgbm_with_mlflow(
                     pickle.dump(model, handle)
 
                 if registered_model_name_prefix:
+                    input_example = X_train.head(min(5, len(X_train))).copy()
+                    model_output_example = booster.predict(input_example)
+                    signature = infer_signature(input_example, model_output_example)
                     mlflow.lightgbm.log_model(
                         booster,
-                        artifact_path=f"{target}_lightgbm_booster",
-                        registered_model_name=f"{registered_model_name_prefix}_{target}",
+                        **_lightgbm_log_model_kwargs(
+                            mlflow.lightgbm.log_model,
+                            model_name=f"{target}_lightgbm_booster",
+                            registered_model_name=f"{registered_model_name_prefix}_{target}",
+                            input_example=input_example,
+                            signature=signature,
+                        ),
                     )
                 trained["models"][target] = model
                 trained["metrics"][target] = {
