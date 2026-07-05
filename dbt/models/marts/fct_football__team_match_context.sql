@@ -77,12 +77,14 @@ select
     opponent_formation,
     {{ normalize_name('team_name') }} as team_name_normalized,
     {{ normalize_name('opponent_team_name') }} as opponent_team_name_normalized,
-    case
-        when lower(league_name) like '%world cup group stage%' or lower(league_name) like '%world cup%' then 1.0
-        when lower(league_name) like '%qualifier%' or lower(league_name) like '%qualifiers%' then 1.0
-        when lower(league_name) like '%friendly%' or lower(league_name) like '%friendly matches%' then 0.6
-        else 1.0
-    end as game_importance_scalar,
+    cast(
+        case
+            when lower(league_name) like '%world cup group stage%' or lower(league_name) like '%world cup%' then 1.0
+            when lower(league_name) like '%qualifier%' or lower(league_name) like '%qualifiers%' then 1.0
+            when lower(league_name) like '%friendly%' or lower(league_name) like '%friendly matches%' then 0.6
+            else 1.0
+        end as double
+    ) as game_importance_scalar,
     cast(1.0 as double) as opponent_strength_adjustment,
     cast(1.0 as double) as defensive_containment_rating,
     cast(1500.0 as double) as defensive_elo,
