@@ -41,6 +41,7 @@ joined as (
         team_context.home_away,
         team_context.goals_for,
         team_context.goals_against,
+        team_context.opponent_formation,
         coalesce(team_context.game_importance_scalar, 1.0) as game_importance_scalar,
         coalesce(team_context.opponent_strength_adjustment, 1.0) as opponent_strength_adjustment,
         coalesce(team_context.defensive_containment_rating, 1.0) as defensive_containment_rating,
@@ -120,6 +121,7 @@ select
     opponent_team_name_normalized,
     goals_for,
     goals_against,
+    opponent_formation,
 
     player_name,
     player_name_normalized,

@@ -65,6 +65,12 @@ DEFAULT_LIGHTGBM_FEATURES = [
     "player_defense_delta_vs_team",
     "lineup_attack_delta_vs_team",
     "lineup_defense_delta_vs_team",
+    "formation_row",
+    "formation_column",
+    "formation_win_rate_pre",
+    "formation_matchup_win_rate_pre",
+    "formation_count_pre",
+    "formation_matchup_count_pre",
 ]
 
 

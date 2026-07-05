@@ -2,10 +2,15 @@ with fixtures as (
     select * from {{ ref('stg_football__fixtures') }}
 ),
 
+team_formations as (
+    select distinct fixture_id, team_id, formation
+    from {{ ref('stg_football__lineups') }}
+),
+
 home_rows as (
     select
-        fixture_id,
-        fixture_date_utc,
+        fixtures.fixture_id,
+        fixtures.fixture_date_utc,
         home_team_id as team_id,
         home_team_name as team_name,
         away_team_id as opponent_team_id,
@@ -16,14 +21,22 @@ home_rows as (
         league_id,
         league_name,
         league_season,
-        status_short
+        status_short,
+        tf_team.formation as team_formation,
+        tf_opp.formation as opponent_formation
     from fixtures
+    left join team_formations tf_team
+        on fixtures.fixture_id = tf_team.fixture_id
+       and fixtures.home_team_id = tf_team.team_id
+    left join team_formations tf_opp
+        on fixtures.fixture_id = tf_opp.fixture_id
+       and fixtures.away_team_id = tf_opp.team_id
 ),
 
 away_rows as (
     select
-        fixture_id,
-        fixture_date_utc,
+        fixtures.fixture_id,
+        fixtures.fixture_date_utc,
         away_team_id as team_id,
         away_team_name as team_name,
         home_team_id as opponent_team_id,
@@ -34,8 +47,16 @@ away_rows as (
         league_id,
         league_name,
         league_season,
-        status_short
+        status_short,
+        tf_team.formation as team_formation,
+        tf_opp.formation as opponent_formation
     from fixtures
+    left join team_formations tf_team
+        on fixtures.fixture_id = tf_team.fixture_id
+       and fixtures.away_team_id = tf_team.team_id
+    left join team_formations tf_opp
+        on fixtures.fixture_id = tf_opp.fixture_id
+       and fixtures.home_team_id = tf_opp.team_id
 )
 
 select
@@ -52,6 +73,8 @@ select
     league_name,
     league_season,
     status_short,
+    team_formation,
+    opponent_formation,
     {{ normalize_name('team_name') }} as team_name_normalized,
     {{ normalize_name('opponent_team_name') }} as opponent_team_name_normalized,
     case

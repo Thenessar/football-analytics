@@ -288,6 +288,7 @@ def test_dbt_project_contains_expected_models_and_seed():
         "models/marts/fct_football__player_elo_history.py",
         "models/marts/fct_football__lineup_elo_strength.sql",
         "models/marts/fct_football__player_shot_features.sql",
+        "models/marts/fct_football__formation_matchup_history.sql",
         "models/marts/fct_football__player_sapm.sql",
         "seeds/senior_mens_international_leagues.csv",
         "seeds/fifa_mens_world_ranking_december_2022.csv",
@@ -309,6 +310,7 @@ def test_dbt_project_contains_expected_models_and_seed():
         "ref('fct_football__team_elo_history')",
         "ref('fct_football__player_elo_history')",
         "ref('fct_football__lineup_elo_strength')",
+        "ref('fct_football__formation_matchup_history')",
         "ref('senior_mens_international_leagues')",
     ):
         assert expected_ref in model_sql

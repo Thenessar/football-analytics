@@ -36,7 +36,35 @@ def model(dbt, session):
 
     fixtures = dbt.ref("stg_football__fixtures").toPandas()
     rankings = dbt.ref("dim_football__rating_baseline").toPandas()
-    history = build_team_elo_history(fixtures, rankings)
+    stats_df = dbt.ref("stg_football__player_match_stats").toPandas()
+
+    stats_agg = stats_df.groupby(["fixture_id", "team_id"]).agg(
+        shots_total=("shots_total", "sum"),
+        shots_on=("shots_on", "sum"),
+    ).reset_index()
+
+    fixtures = fixtures.merge(
+        stats_agg.rename(columns={
+            "team_id": "home_team_id",
+            "shots_total": "home_shots_total",
+            "shots_on": "home_shots_on",
+        }),
+        on=["fixture_id", "home_team_id"],
+        how="left"
+    )
+    fixtures = fixtures.merge(
+        stats_agg.rename(columns={
+            "team_id": "away_team_id",
+            "shots_total": "away_shots_total",
+            "shots_on": "away_shots_on",
+        }),
+        on=["fixture_id", "away_team_id"],
+        how="left"
+    )
+    for col in ["home_shots_total", "home_shots_on", "away_shots_total", "away_shots_on"]:
+        fixtures[col] = fixtures[col].fillna(0.0)
+
+    history = build_team_elo_history(fixtures, rankings, base_goal_rate=5.0)
 
     if history.empty:
         return session.createDataFrame([], TEAM_ELO_SCHEMA)

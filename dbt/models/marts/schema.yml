@@ -29,6 +29,10 @@ models:
           - accepted_values:
               arguments:
                 values: ['home', 'away']
+      - name: team_formation
+        description: The formation used by the team in the fixture.
+      - name: opponent_formation
+        description: The formation used by the opponent in the fixture.
 
   - name: fct_football__player_match_features
     description: Canonical gold player-fixture feature mart for data science. One row represents one player for one team in one fixture, with player statistics, match context, lineup context, engineered per-90 metrics, rate metrics, and modeling flags.
@@ -93,6 +97,8 @@ models:
         description: Goals scored by the player's team in the fixture.
       - name: goals_against
         description: Goals conceded by the player's team in the fixture.
+      - name: opponent_formation
+        description: The formation used by the opposing team.
       - name: player_name
         description: Player display name from the provider payload.
       - name: games_position
@@ -524,6 +530,16 @@ models:
       - name: team_lineup_defense_strength
         tests:
           - not_null
+      - name: opponent_formation
+        description: The formation used by the opposing team.
+      - name: formation_win_rate_pre
+        description: Historical win rate of the team's formation prior to the match.
+      - name: formation_count_pre
+        description: Number of preceding matches played using the team's formation.
+      - name: formation_matchup_win_rate_pre
+        description: Head-to-head win rate of the team's formation against the opponent's formation in preceding matches.
+      - name: formation_matchup_count_pre
+        description: Number of preceding head-to-head matches between these two formations.
 
   - name: fct_football__player_sapm
     description: Specialized gold S-APM-ready mart rebuilt from fct_football__player_match_features with position priors and context weights.
@@ -555,5 +571,33 @@ models:
         tests:
           - not_null
       - name: sapm_interaction_weight
+        tests:
+          - not_null
+
+  - name: fct_football__formation_matchup_history
+    description: Cumulative point-in-time overall and head-to-head success statistics for formations.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+      - name: team_id
+        tests:
+          - not_null
+      - name: formation_win_rate_pre
+        tests:
+          - not_null
+      - name: formation_count_pre
+        tests:
+          - not_null
+      - name: formation_matchup_win_rate_pre
+        tests:
+          - not_null
+      - name: formation_matchup_count_pre
         tests:
           - not_null

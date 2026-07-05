@@ -41,6 +41,17 @@ lineup_strength as (
     from {{ ref('fct_football__lineup_elo_strength') }}
 ),
 
+formation_history as (
+    select
+        fixture_id,
+        team_id,
+        formation_win_rate_pre,
+        formation_count_pre,
+        formation_matchup_win_rate_pre,
+        formation_matchup_count_pre
+    from {{ ref('fct_football__formation_matchup_history') }}
+),
+
 enriched as (
     select
         base.*,
@@ -60,7 +71,11 @@ enriched as (
         coalesce(player_elo.player_defensive_rating_pre, player_elo.player_defensive_elo_pre, team_elo.team_elo_defense_pre, 0.0) as player_defensive_rating_pre,
         coalesce(player_elo.missed_fixture_count_pre, 0) as missed_fixture_count_pre,
         coalesce(lineup_strength.starting_xi_attack_elo, team_elo.team_elo_attack_pre, 0.0) as team_lineup_attack_strength,
-        coalesce(lineup_strength.starting_xi_defense_elo, team_elo.team_elo_defense_pre, 0.0) as team_lineup_defense_strength
+        coalesce(lineup_strength.starting_xi_defense_elo, team_elo.team_elo_defense_pre, 0.0) as team_lineup_defense_strength,
+        coalesce(formation_history.formation_win_rate_pre, 0.5) as formation_win_rate_pre,
+        coalesce(formation_history.formation_count_pre, 0) as formation_count_pre,
+        coalesce(formation_history.formation_matchup_win_rate_pre, 0.5) as formation_matchup_win_rate_pre,
+        coalesce(formation_history.formation_matchup_count_pre, 0) as formation_matchup_count_pre
     from base
     left join team_elo
         on base.fixture_id = team_elo.fixture_id
@@ -72,6 +87,9 @@ enriched as (
     left join lineup_strength
         on base.fixture_id = lineup_strength.fixture_id
        and base.team_id = lineup_strength.team_id
+    left join formation_history
+        on base.fixture_id = formation_history.fixture_id
+       and base.team_id = formation_history.team_id
 ),
 
 zeroed as (
@@ -106,6 +124,7 @@ zeroed as (
         formation_grid,
         formation_row,
         formation_column,
+        opponent_formation,
 
         cast(coalesce(games_minutes, 0) as double) as games_minutes,
         cast(coalesce(offsides, 0) as double) as offsides,
@@ -154,7 +173,11 @@ zeroed as (
         player_defensive_rating_pre,
         missed_fixture_count_pre,
         team_lineup_attack_strength,
-        team_lineup_defense_strength
+        team_lineup_defense_strength,
+        formation_win_rate_pre,
+        formation_count_pre,
+        formation_matchup_win_rate_pre,
+        formation_matchup_count_pre
     from enriched
 ),
 
@@ -255,6 +278,7 @@ select
     formation_grid,
     formation_row,
     formation_column,
+    opponent_formation,
 
     games_minutes,
     exposure,
@@ -316,6 +340,10 @@ select
     missed_fixture_count_pre,
     team_lineup_attack_strength,
     team_lineup_defense_strength,
+    formation_win_rate_pre,
+    formation_count_pre,
+    formation_matchup_win_rate_pre,
+    formation_matchup_count_pre,
 
     current_timestamp() as updated_at_utc
 from featured

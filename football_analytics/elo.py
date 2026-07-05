@@ -244,6 +244,7 @@ def build_team_elo_history(
 
     states: Dict[str, TeamEloState] = {}
     snapshots = []
+    has_shots = "home_shots_total" in fixtures.columns and "away_shots_total" in fixtures.columns
 
     for _, row in fixtures.iterrows():
         home = _get_team_state(
@@ -340,8 +341,15 @@ def build_team_elo_history(
         home.elo_general += general_delta
         away.elo_general -= general_delta
 
-        home_residual = home_goals - home_lambda
-        away_residual = away_goals - away_lambda
+        if has_shots:
+            home_score = home_goals + 0.5 * float(row.get("home_shots_on", 0.0)) + 0.1 * float(row.get("home_shots_total", 0.0))
+            away_score = away_goals + 0.5 * float(row.get("away_shots_on", 0.0)) + 0.1 * float(row.get("away_shots_total", 0.0))
+        else:
+            home_score = home_goals
+            away_score = away_goals
+
+        home_residual = home_score - home_lambda
+        away_residual = away_score - away_lambda
         lr = goal_state_learning_rate * importance
         home.elo_attack = float(np.clip(home.elo_attack + lr * home_residual, -state_clip, state_clip))
         away.elo_defense = float(np.clip(away.elo_defense - lr * home_residual, -state_clip, state_clip))
