@@ -135,9 +135,9 @@ zeroed as (
         dribble_success_rate,
 
         game_importance_scalar,
-        opponent_strength_adjustment,
+        least(greatest(exp((coalesce(opponent_elo_general_pre, 1500.0) - 1500.0) / 900.0) / coalesce(defensive_containment_rating, 1.0), 0.5), 1.8) as opponent_strength_adjustment,
         defensive_containment_rating,
-        defensive_elo,
+        coalesce(opponent_elo_general_pre, 1500.0) as defensive_elo,
         team_elo_general_pre,
         opponent_elo_general_pre,
         team_elo_attack_pre,
@@ -154,8 +154,7 @@ zeroed as (
         player_defensive_rating_pre,
         missed_fixture_count_pre,
         team_lineup_attack_strength,
-        team_lineup_defense_strength,
-        response_hash
+        team_lineup_defense_strength
     from enriched
 ),
 
@@ -318,6 +317,5 @@ select
     team_lineup_attack_strength,
     team_lineup_defense_strength,
 
-    response_hash,
     current_timestamp() as updated_at_utc
 from featured

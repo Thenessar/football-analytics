@@ -94,3 +94,6 @@ output/
 # Ignore JSON files except the primary tournament cache database
 *.json
 !world_cup_2026_completed_data.json
+
+# Local profiles config
+dbt/profiles.yml

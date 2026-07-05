@@ -19,8 +19,6 @@ joined as (
         player_stats.team_name_normalized,
         player_stats.player_name,
         player_stats.player_name_normalized,
-        player_stats.player_photo_url,
-        player_stats.games_number,
         player_stats.games_position,
         lineups.position as lineup_position,
         coalesce(lineups.position, player_stats.games_position) as primary_position,
@@ -74,8 +72,7 @@ joined as (
         player_stats.penalty_committed,
         player_stats.penalty_scored,
         player_stats.penalty_missed,
-        player_stats.penalty_saved,
-        player_stats.response_hash
+        player_stats.penalty_saved
     from player_stats
     left join lineups
         on player_stats.fixture_id = lineups.fixture_id
@@ -126,8 +123,6 @@ select
 
     player_name,
     player_name_normalized,
-    player_photo_url,
-    games_number,
     games_position,
     lineup_position,
     primary_position,
@@ -204,7 +199,6 @@ select
     opponent_strength_adjustment,
     defensive_containment_rating,
     defensive_elo,
-    response_hash,
     current_timestamp() as updated_at_utc
 from featured
 where coalesce(games_minutes, 0) between 1 and 130

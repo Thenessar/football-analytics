@@ -95,10 +95,6 @@ models:
         description: Goals conceded by the player's team in the fixture.
       - name: player_name
         description: Player display name from the provider payload.
-      - name: player_photo_url
-        description: Provider player photo URL.
-      - name: games_number
-        description: Shirt number reported in the player statistics payload.
       - name: games_position
         description: Position reported in the player statistics payload.
       - name: lineup_position
