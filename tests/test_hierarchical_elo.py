@@ -11,7 +11,9 @@ from football_analytics.elo import (
     coalesce_structural_event_zeros,
 )
 from football_analytics.ml_training import (
+    DEFAULT_LIGHTGBM_FEATURES,
     _prepare_xy,
+    add_model_interaction_features,
     count_threshold_probabilities,
     evaluate_count_predictions,
     poisson_log_loss,
@@ -328,12 +330,67 @@ def test_training_script_requires_dbt_materialized_elo_columns():
     with pytest.raises(ValueError, match="dbt-materialized ELO"):
         build_training_feature_frame(feature_frame)
 
-    enriched_feature_frame = feature_frame.assign(
-        **{column: 0.0 for column in REQUIRED_ELO_FEATURE_COLUMNS}
-    )
+    enriched_feature_frame = feature_frame.assign(**{
+        "team_elo_general_pre": 1510.0,
+        "opponent_elo_general_pre": 1490.0,
+        "team_elo_attack_pre": 0.2,
+        "team_elo_defense_pre": 0.1,
+        "opponent_elo_attack_pre": -0.1,
+        "opponent_elo_defense_pre": 0.05,
+        "expected_goals_for_pre": 1.4,
+        "expected_goals_against_pre": 1.0,
+        "player_offensive_modifier_pre": 0.3,
+        "player_defensive_modifier_pre": -0.2,
+        "player_offensive_elo_pre": 0.5,
+        "player_defensive_elo_pre": -0.1,
+        "player_offensive_rating_pre": 0.5,
+        "player_defensive_rating_pre": -0.1,
+        "missed_fixture_count_pre": 0,
+        "team_lineup_attack_strength": 0.25,
+        "team_lineup_defense_strength": 0.05,
+    })
     training_frame = build_training_feature_frame(enriched_feature_frame)
 
-    assert training_frame.equals(enriched_feature_frame)
+    assert training_frame.iloc[0]["team_elo_general_diff"] == 20.0
+    assert training_frame.iloc[0]["player_attack_vs_opp_defense"] == pytest.approx(0.45)
+    assert training_frame.iloc[0]["lineup_attack_delta_vs_team"] == pytest.approx(0.05)
+
+
+def test_model_interaction_features_are_derived_from_persisted_elo_columns():
+    frame = pd.DataFrame([{
+        "team_elo_general_pre": 1600.0,
+        "opponent_elo_general_pre": 1550.0,
+        "team_elo_attack_pre": 0.30,
+        "team_elo_defense_pre": 0.10,
+        "opponent_elo_attack_pre": 0.20,
+        "opponent_elo_defense_pre": -0.05,
+        "player_offensive_elo_pre": 0.55,
+        "player_defensive_elo_pre": 0.00,
+        "team_lineup_attack_strength": 0.40,
+        "team_lineup_defense_strength": 0.15,
+    }])
+
+    enriched = add_model_interaction_features(frame)
+
+    assert enriched.iloc[0]["team_elo_general_diff"] == 50.0
+    assert enriched.iloc[0]["team_attack_vs_opp_defense"] == pytest.approx(0.35)
+    assert enriched.iloc[0]["player_attack_delta_vs_team"] == pytest.approx(0.25)
+    assert enriched.iloc[0]["lineup_defense_vs_opp_attack"] == pytest.approx(-0.05)
+
+
+def test_default_lightgbm_features_include_persisted_and_derived_elo_features():
+    expected = {
+        "player_offensive_rating_pre",
+        "player_defensive_rating_pre",
+        "team_lineup_attack_strength",
+        "team_lineup_defense_strength",
+        "team_elo_general_diff",
+        "player_attack_vs_opp_defense",
+        "lineup_attack_delta_vs_team",
+        "opponent_defensive_elo_l10",
+    }
+
+    assert expected.issubset(set(DEFAULT_LIGHTGBM_FEATURES))
 
 
 def test_assemble_hierarchical_feature_frame_overwrites_stale_elo_columns():
