@@ -43,9 +43,27 @@ DEFAULT_LIGHTGBM_FEATURES = [
     "player_defensive_modifier_pre",
     "player_offensive_elo_pre",
     "player_defensive_elo_pre",
+    "player_offensive_rating_pre",
+    "player_defensive_rating_pre",
     "missed_fixture_count_pre",
     "team_lineup_attack_strength",
     "team_lineup_defense_strength",
+    "game_importance_scalar",
+    "game_importance_l5",
+    "opponent_strength_adjustment",
+    "defensive_containment_rating",
+    "opponent_defensive_elo_l10",
+    "team_elo_general_diff",
+    "team_attack_vs_opp_defense",
+    "team_defense_vs_opp_attack",
+    "player_attack_vs_opp_defense",
+    "player_defense_vs_opp_attack",
+    "lineup_attack_vs_opp_defense",
+    "lineup_defense_vs_opp_attack",
+    "player_attack_delta_vs_team",
+    "player_defense_delta_vs_team",
+    "lineup_attack_delta_vs_team",
+    "lineup_defense_delta_vs_team",
 ]
 
 
@@ -60,6 +78,62 @@ def _unique_preserve_order(values: Iterable[str]) -> list[str]:
         seen.add(value)
         unique.append(value)
     return unique
+
+
+def add_model_interaction_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Adds leakage-safe matchup features from dbt-materialized ELO columns."""
+
+    out = frame.copy()
+
+    def has(*columns: str) -> bool:
+        return all(column in out.columns for column in columns)
+
+    if has("team_elo_general_pre", "opponent_elo_general_pre"):
+        out["team_elo_general_diff"] = (
+            out["team_elo_general_pre"] - out["opponent_elo_general_pre"]
+        )
+    if has("team_elo_attack_pre", "opponent_elo_defense_pre"):
+        out["team_attack_vs_opp_defense"] = (
+            out["team_elo_attack_pre"] - out["opponent_elo_defense_pre"]
+        )
+    if has("team_elo_defense_pre", "opponent_elo_attack_pre"):
+        out["team_defense_vs_opp_attack"] = (
+            out["team_elo_defense_pre"] - out["opponent_elo_attack_pre"]
+        )
+    if has("player_offensive_elo_pre", "opponent_elo_defense_pre"):
+        out["player_attack_vs_opp_defense"] = (
+            out["player_offensive_elo_pre"] - out["opponent_elo_defense_pre"]
+        )
+    if has("player_defensive_elo_pre", "opponent_elo_attack_pre"):
+        out["player_defense_vs_opp_attack"] = (
+            out["player_defensive_elo_pre"] - out["opponent_elo_attack_pre"]
+        )
+    if has("team_lineup_attack_strength", "opponent_elo_defense_pre"):
+        out["lineup_attack_vs_opp_defense"] = (
+            out["team_lineup_attack_strength"] - out["opponent_elo_defense_pre"]
+        )
+    if has("team_lineup_defense_strength", "opponent_elo_attack_pre"):
+        out["lineup_defense_vs_opp_attack"] = (
+            out["team_lineup_defense_strength"] - out["opponent_elo_attack_pre"]
+        )
+    if has("player_offensive_elo_pre", "team_elo_attack_pre"):
+        out["player_attack_delta_vs_team"] = (
+            out["player_offensive_elo_pre"] - out["team_elo_attack_pre"]
+        )
+    if has("player_defensive_elo_pre", "team_elo_defense_pre"):
+        out["player_defense_delta_vs_team"] = (
+            out["player_defensive_elo_pre"] - out["team_elo_defense_pre"]
+        )
+    if has("team_lineup_attack_strength", "team_elo_attack_pre"):
+        out["lineup_attack_delta_vs_team"] = (
+            out["team_lineup_attack_strength"] - out["team_elo_attack_pre"]
+        )
+    if has("team_lineup_defense_strength", "team_elo_defense_pre"):
+        out["lineup_defense_delta_vs_team"] = (
+            out["team_lineup_defense_strength"] - out["team_elo_defense_pre"]
+        )
+
+    return out
 
 
 @dataclass

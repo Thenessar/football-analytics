@@ -16,6 +16,7 @@ import pandas as pd
 from football_analytics.ml_training import (
     DEFAULT_TARGET_COLUMNS,
     PoissonLightGBMConfig,
+    add_model_interaction_features,
     temporal_train_validation_split,
     train_poisson_lightgbm_with_mlflow,
 )
@@ -34,6 +35,9 @@ REQUIRED_ELO_FEATURE_COLUMNS = [
     "player_defensive_modifier_pre",
     "player_offensive_elo_pre",
     "player_defensive_elo_pre",
+    "player_offensive_rating_pre",
+    "player_defensive_rating_pre",
+    "missed_fixture_count_pre",
     "team_lineup_attack_strength",
     "team_lineup_defense_strength",
 ]
@@ -64,7 +68,7 @@ def build_training_feature_frame(
             "Feature table is missing dbt-materialized ELO columns: "
             + ", ".join(missing)
         )
-    return feature_frame.copy()
+    return add_model_interaction_features(feature_frame)
 
 
 def parse_args() -> argparse.Namespace:
