@@ -145,8 +145,11 @@ def test_bundle_passes_statistics_toggle_to_bronze_ingest():
     assert match is not None
     assert 'include_statistics: "{{job.parameters.include_statistics}}"' in match.group("task")
     assert "- name: include_statistics" in bundle
+    assert 'statistics_backfill: "{{job.parameters.statistics_backfill}}"' in match.group("task")
+    assert "- name: statistics_backfill" in bundle
     assert "ingest_fixture_statistics_for_fixtures_to_bronze" in notebook
     assert 'table_name(config, "bronze", "football_fixture_statistics_raw")' in notebook
+    assert "statistics_backfill" in notebook
 
 
 def test_prematch_inference_job_polls_the_lineup_trigger_window():

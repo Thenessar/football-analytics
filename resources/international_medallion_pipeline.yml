@@ -38,6 +38,8 @@ resources:
           default: "true"
         - name: include_statistics
           default: "true"
+        - name: statistics_backfill
+          default: "false"
         - name: endpoint_max_workers
           default: ${var.endpoint_max_workers}
         - name: api_rate_limit_per_minute
@@ -79,6 +81,7 @@ resources:
               force_refresh: "{{job.parameters.force_refresh}}"
               include_lineups: "{{job.parameters.include_lineups}}"
               include_statistics: "{{job.parameters.include_statistics}}"
+              statistics_backfill: "{{job.parameters.statistics_backfill}}"
               endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
               api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
           environment_key: notebook_serverless

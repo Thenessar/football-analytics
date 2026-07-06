@@ -28,6 +28,7 @@ dbutils.widgets.text("gold_schema", "gold")
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.dropdown("include_lineups", "true", ["true", "false"])
 dbutils.widgets.dropdown("include_statistics", "true", ["true", "false"])
+dbutils.widgets.dropdown("statistics_backfill", "false", ["false", "true"])
 dbutils.widgets.text("endpoint_max_workers", "8")
 dbutils.widgets.text("api_rate_limit_per_minute", str(DEFAULT_API_RATE_LIMIT_PER_MINUTE))
 
@@ -59,6 +60,7 @@ run_id = dbutils.widgets.get("run_id").strip() or f"intl-{utc_now_iso()}"
 force_refresh = dbutils.widgets.get("force_refresh").strip().lower() == "true"
 include_lineups = dbutils.widgets.get("include_lineups").strip().lower() == "true"
 include_statistics = dbutils.widgets.get("include_statistics").strip().lower() == "true"
+statistics_backfill = dbutils.widgets.get("statistics_backfill").strip().lower() == "true"
 endpoint_max_workers = positive_int_widget("endpoint_max_workers", 8)
 api_rate_limit_per_minute = positive_int_widget(
     "api_rate_limit_per_minute",
@@ -78,7 +80,41 @@ logger.info(
     },
 )
 
-if fixture_id:
+if statistics_backfill:
+    # One-off backfill for /fixtures/statistics (endpoint added after the
+    # historical bronze loads): fetch team statistics for every completed
+    # fixture already known in Silver, without re-running date discovery.
+    # Checkpoint-aware, so reruns resume where the API quota cut off.
+    fixtures_table = table_name(config, "silver", "stg_football__fixtures")
+    completed_fixture_ids = [
+        int(row.fixture_id)
+        for row in spark.sql(
+            f"""
+            SELECT fixture_id
+            FROM {fixtures_table}
+            WHERE status_short IN ('FT', 'AET', 'PEN')
+            ORDER BY fixture_id
+            """
+        ).collect()
+    ]
+    backfill_summary = ingest_fixture_statistics_for_fixtures_to_bronze(
+        spark,
+        completed_fixture_ids,
+        api_key=api_key,
+        bronze_path=table_name(config, "bronze", "football_fixture_statistics_raw"),
+        run_id=run_id,
+        force_refresh=force_refresh,
+        checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
+        logger=logger,
+        endpoint_max_workers=endpoint_max_workers,
+        api_rate_limit_per_minute=api_rate_limit_per_minute,
+    )
+    display({
+        "mode": "statistics_backfill",
+        "completed_fixtures": len(completed_fixture_ids),
+        "statistics": backfill_summary.as_dict(),
+    })
+elif fixture_id:
     fixture_payload = ingest_fixture_metadata_to_bronze(
         spark,
         int(fixture_id),
