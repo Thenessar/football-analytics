@@ -108,7 +108,9 @@ models:
       Pre-match expected minutes for players named in a fixture lineup
       (starters and substitutes), one row per fixture/team/player. The
       estimate uses only appearances strictly prior to the fixture, so it is
-      computable at inference time before kickoff.
+      computable at inference time before kickoff. Estimator choice and the
+      candidates deferred as future work are recorded in
+      docs/adr/0002-expected-minutes-estimator.md.
     columns:
       - name: expected_minutes
         description: Expected minutes for the fixture, clamped to [0, 120].

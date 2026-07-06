@@ -162,9 +162,10 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Value is computable pre-match (uses only historical `games_minutes`, no current-fixture data).
   - Handles small-sample edge cases explicitly (fewer than 5 prior appearances): document fallback (e.g., position-specific prior or plain average) rather than silently failing.
 
-### E2. Document the chosen estimator and open alternatives
+### E2. Document the chosen estimator and open alternatives — ✅ DONE (2026-07-06)
 - **Depends on:** E1.
 - **Acceptance criteria:** short note (in schema.yml description or an ADR) stating which estimator was chosen from the §12.2 candidate list and why, with the remaining candidates (weighted recency decay, separate expected-minutes model, starter/sub priors) marked as future work.
+- **Implementation notes:** `docs/adr/0002-expected-minutes-estimator.md` records the L5 trimmed-mean choice, the plain-average and role-prior fallbacks, and the three deferred candidates; schema.yml description links to it.
 
 ### E3. Tests for expected minutes
 - **Depends on:** E1.
