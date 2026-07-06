@@ -504,9 +504,16 @@ def train_poisson_lightgbm_with_mlflow(
     if experiment_name:
         mlflow.set_experiment(experiment_name)
 
-    trained: Dict[str, Any] = {"models": {}, "metrics": {}, "feature_columns": selected_features}
+    trained: Dict[str, Any] = {
+        "models": {},
+        "metrics": {},
+        "registered_models": {},
+        "feature_columns": selected_features,
+    }
+    registration_queue: list[Dict[str, Any]] = []
 
-    with mlflow.start_run(run_name=run_name):
+    with mlflow.start_run(run_name=run_name) as training_run:
+        training_run_id = training_run.info.run_id
         mlflow.log_params(cfg.to_mlflow_params(selected_features))
         mlflow.log_param("target_columns", json.dumps(list(target_columns)))
         mlflow.log_param("exposure_column", exposure_column)
@@ -637,16 +644,13 @@ def train_poisson_lightgbm_with_mlflow(
                     input_example = X_train.head(min(5, len(X_train))).copy()
                     model_output_example = booster.predict(input_example)
                     signature = infer_signature(input_example, model_output_example)
-                    mlflow.lightgbm.log_model(
-                        booster,
-                        **_lightgbm_log_model_kwargs(
-                            mlflow.lightgbm.log_model,
-                            model_name=f"{target}_lightgbm_booster",
-                            registered_model_name=registered_model_name,
-                            input_example=input_example,
-                            signature=signature,
-                        ),
-                    )
+                    registration_queue.append({
+                        "target": target,
+                        "booster": booster,
+                        "registered_model_name": registered_model_name,
+                        "input_example": input_example,
+                        "signature": signature,
+                    })
                 trained["models"][target] = model
                 trained["metrics"][target] = {
                     "train": train_metrics,
@@ -654,6 +658,27 @@ def train_poisson_lightgbm_with_mlflow(
                 }
 
             mlflow.log_artifacts(str(artifact_dir), artifact_path="model_artifacts")
+
+    # Register models OUTSIDE the training run, one clean run per target.
+    # Databricks MLflow links run metrics to the run's logged models and the
+    # free tier caps 1000 metrics per logged model; a registration run that
+    # logs no metrics can never trip that quota. Params link back to the
+    # training run for lineage.
+    for entry in registration_queue:
+        with mlflow.start_run(run_name=f"register__{entry['target']}"):
+            mlflow.log_param("training_run_id", training_run_id)
+            mlflow.log_param("target_event", entry["target"])
+            mlflow.lightgbm.log_model(
+                entry["booster"],
+                **_lightgbm_log_model_kwargs(
+                    mlflow.lightgbm.log_model,
+                    model_name=f"{entry['target']}_lightgbm_booster",
+                    registered_model_name=entry["registered_model_name"],
+                    input_example=entry["input_example"],
+                    signature=entry["signature"],
+                ),
+            )
+        trained["registered_models"][entry["target"]] = entry["registered_model_name"]
 
     return trained
 
