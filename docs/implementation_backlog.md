@@ -67,8 +67,14 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic A (needs raw statistics rows to type/flatten).
 
-### B1. `stg_football__team_match_stats` model
+### B1. `stg_football__team_match_stats` model — ✅ DONE (2026-07-06)
 - **Files:** new file in `dbt/models/staging/`, register in `dbt/models/staging/schema.yml`.
+- **Implementation notes:**
+  - Wide grain (one row per `fixture_id`/`team_id`); provider EAV `type`/`value` pairs pivoted via `max(case when ...)`. Real API-Football stat names used: `Ball Possession`, `Total Shots`, `Shots on Goal`, `Shots off Goal`, `Blocked Shots`, `Shots insidebox`, `Shots outsidebox`, `Total passes`, `Passes accurate`, `Passes %`, `Fouls`, `Corner Kicks`, `Offsides`, `Yellow Cards`, `Red Cards`, `Goalkeeper Saves`, `expected_goals`.
+  - Percent strings (`"61%"`) cast to double 0–100; provider nulls preserved (provider conflates zero and no-coverage — gold decides null handling).
+  - Dedup keeps latest ingested envelope: `qualify row_number() over (partition by fixture_id, team_id order by ingested_at_utc desc, updated_at_utc desc) = 1` — uses bronze `ingested_at_utc` as primary sort since `updated_at_utc` is a run timestamp that ties within a run.
+  - `team_name_normalized` via shared `normalize_name` macro; rows filtered to fixtures present in `stg_football__fixtures`, matching siblings.
+  - Tests: unique `(fixture_id, team_id)` + not-null + fixture relationship in `staging/schema.yml`; percent bounds via singular test `dbt/tests/assert_stg_football__team_match_stats_percentages_in_range.sql`. `dbt parse` validated locally.
 - **Acceptance criteria:**
   - Grain: one wide row per `fixture_id` + `team_id` (per business_logic.md §10.3 preferred shape, not long/EAV).
   - Columns typed per §10.3 example list (`possession_pct`, `shots_total_team`, `shots_on_team`, `passes_total_team`, `passes_accurate_team`, `passes_pct_team`, `fouls_team`, `corners_team`, `offsides_team`, `yellow_cards_team`, `red_cards_team`), with exact names reconciled against the real API-Football payload field names.

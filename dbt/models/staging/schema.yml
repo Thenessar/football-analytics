@@ -77,6 +77,61 @@ models:
       - name: penalty_committed
         description: Penalties committed by the player; sourced from API-Football's `commited` field.
 
+  - name: stg_football__team_match_stats
+    description: >
+      Silver team-level match statistics parsed from raw `/fixtures/statistics`
+      envelopes. One wide row per fixture/team; provider EAV `type`/`value`
+      pairs are pivoted to typed columns. Percentage values ("61%") are cast to
+      doubles without the percent sign. Provider nulls are preserved (the
+      provider reports null both for zero counts such as red cards and for
+      uncovered statistics), so downstream gold models decide null handling.
+      Deduplicated by fixture/team keeping the latest ingested envelope.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: team_name_normalized
+        description: Team name normalized with the shared normalize_name macro for join resilience.
+      - name: possession_pct
+        description: Ball possession share in percent (0-100), from provider `Ball Possession`.
+      - name: shots_total_team
+        description: Team total shots, from provider `Total Shots`.
+      - name: shots_on_team
+        description: Team shots on target, from provider `Shots on Goal`.
+      - name: passes_total_team
+        description: Team total passes, from provider `Total passes`.
+      - name: passes_accurate_team
+        description: Team accurate passes, from provider `Passes accurate`.
+      - name: passes_pct_team
+        description: Team pass accuracy in percent (0-100), from provider `Passes %`.
+      - name: fouls_team
+        description: Team fouls committed, from provider `Fouls`.
+      - name: corners_team
+        description: Team corner kicks, from provider `Corner Kicks`.
+      - name: offsides_team
+        description: Team offsides, from provider `Offsides`.
+      - name: yellow_cards_team
+        description: Team yellow cards, from provider `Yellow Cards`.
+      - name: red_cards_team
+        description: Team red cards, from provider `Red Cards`; the provider reports null rather than 0.
+      - name: goalkeeper_saves_team
+        description: Goalkeeper saves, from provider `Goalkeeper Saves`.
+      - name: expected_goals_team
+        description: Provider expected goals (`expected_goals`) where coverage exists.
+
   - name: stg_football__lineups
     description: Silver lineup rows parsed from raw API-Football lineup envelopes.
     tests:
