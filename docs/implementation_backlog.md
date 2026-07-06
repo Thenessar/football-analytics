@@ -110,9 +110,12 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Chosen approach implemented as `elo_possession_interaction` and/or `formation_possession_profile` feature(s) in C1 or a follow-up column set.
   - This is a decision ticket — do not block C1/C3 on it; C1 can ship with possession features and this ticket resolves the "explicit model" question afterward.
 
-### C3. Tests for team match-flow mart
+### C3. Tests for team match-flow mart — ✅ DONE (2026-07-06)
 - **Depends on:** C1.
 - **Acceptance criteria:** unique `(fixture_id, team_id)`, sane bounds for possession/percent columns, not-null on rolling features once sufficient history exists (or explicit null-handling documented for early-season/insufficient-history rows).
+- **Implementation notes:**
+  - schema.yml: unique `(fixture_id, team_id)`, not-null on `fixture_id`/`team_id`/`opponent_team_id`/`home_away`, fixture relationship, accepted home/away values. Null-handling rule documented in the model description (L5 nulls only with zero prior covered fixtures).
+  - Singular tests: `assert_fct_football__team_match_stats_context_bounds_sane.sql` (percent columns 0–100; share/Elo-score/interaction 0–1) and `assert_fct_football__team_match_stats_context_rolling_populated.sql` (any row with ≥1 prior covered fixture must have a non-null rolling average).
 
 ---
 

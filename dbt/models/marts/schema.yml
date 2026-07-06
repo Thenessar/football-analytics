@@ -47,11 +47,37 @@ models:
       a 0.5 fallback when either side lacks history. Fouls drawn by a team
       equal the fouls its opponent commits, so opponent_fouls_drawn_allowed_l5
       is the opponent's own committed-fouls rolling average.
+      Null handling: rolling *_l5 columns are null only when a team has no
+      prior fixture with statistics coverage (early history); they are
+      otherwise populated even for future fixtures.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
     columns:
       - name: fixture_id
         description: API-Football fixture identifier.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__fixtures')
+                field: fixture_id
       - name: team_id
         description: Team identifier for the row perspective.
+        tests:
+          - not_null
+      - name: opponent_team_id
+        tests:
+          - not_null
+      - name: home_away
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['home', 'away']
       - name: team_possession_l5_avg
         description: Team average possession over the previous 5 fixtures (excluding the current one).
       - name: opponent_possession_l5_avg
