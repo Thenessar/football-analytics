@@ -133,6 +133,22 @@ def test_bundle_passes_parallelism_parameters_to_bronze_ingest():
         assert f"{parameter}: \"{{{{job.parameters.{parameter}}}}}\"" in task_block
 
 
+def test_bundle_passes_statistics_toggle_to_bronze_ingest():
+    bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
+    notebook = (ROOT / "notebooks" / "01_bronze_ingest.py").read_text(encoding="utf-8")
+    match = re.search(
+        r"- task_key: bronze_ingest\b(?P<task>.*?)(?=\n        - task_key:|\Z)",
+        bundle,
+        flags=re.S,
+    )
+
+    assert match is not None
+    assert 'include_statistics: "{{job.parameters.include_statistics}}"' in match.group("task")
+    assert "- name: include_statistics" in bundle
+    assert "ingest_fixture_statistics_for_fixtures_to_bronze" in notebook
+    assert 'table_name(config, "bronze", "football_fixture_statistics_raw")' in notebook
+
+
 def test_bundle_passes_default_lookahead_to_notebook_tasks():
     bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")

@@ -38,12 +38,16 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Tests: completed-checkpoint skip, `force_refresh` refetch, completed-only selection, empty-payload-→-SKIPPED-with-hash, and orchestrator wiring (`tests/test_databricks_ingestion.py`). Note this already covers most of A4's matrix except an explicit hash-change-triggers-refresh test.
   - **For A3:** the notebook/job still needs to pass `bronze_statistics_path=table_name(config, "bronze", "football_fixture_statistics_raw")` (and optionally an `include_statistics` widget); until then the orchestrator defaults to the legacy `/mnt/...` path.
 
-### A3. Wire statistics ingestion into the orchestration notebook/job
+### A3. Wire statistics ingestion into the orchestration notebook/job — ✅ DONE (2026-07-06)
 - **Files:** `notebooks/01_bronze_ingest.py`, `resources/international_medallion_pipeline.yml`.
 - **Depends on:** A2.
 - **Acceptance criteria:**
   - `bronze_ingest` job step calls the new endpoint plan alongside fixtures/players/lineups.
   - Job graph order (`prepare_run → bronze_ingest → dbt_deps → dbt_seed → dbt_build → dbt_python_models → dbt_build_python_dependents`) is unchanged.
+- **Implementation notes:**
+  - Notebook: added `include_statistics` widget (default `true`); both modes wired — fixture_id mode calls `ingest_fixture_statistics_for_fixtures_to_bronze` directly, date mode passes `include_statistics`/`bronze_statistics_path` to the orchestrator. Bronze target resolves via `table_name(config, "bronze", "football_fixture_statistics_raw")`.
+  - Job yml: added `include_statistics` job parameter and base_parameter pass-through on `bronze_ingest`; task graph untouched.
+  - Test: `test_bundle_passes_statistics_toggle_to_bronze_ingest` in `tests/test_databricks_bundle_and_config.py`.
 
 ### A4. Checkpoint/idempotency tests for the new endpoint
 - **Depends on:** A2.

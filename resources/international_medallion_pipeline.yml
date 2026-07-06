@@ -36,6 +36,8 @@ resources:
           default: "false"
         - name: include_lineups
           default: "true"
+        - name: include_statistics
+          default: "true"
         - name: endpoint_max_workers
           default: ${var.endpoint_max_workers}
         - name: api_rate_limit_per_minute
@@ -76,6 +78,7 @@ resources:
               gold_schema: "{{job.parameters.gold_schema}}"
               force_refresh: "{{job.parameters.force_refresh}}"
               include_lineups: "{{job.parameters.include_lineups}}"
+              include_statistics: "{{job.parameters.include_statistics}}"
               endpoint_max_workers: "{{job.parameters.endpoint_max_workers}}"
               api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
           environment_key: notebook_serverless

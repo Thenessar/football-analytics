@@ -7,6 +7,7 @@ from football_analytics.databricks.tables import table_name
 from football_analytics.databricks_ingestion import (
     DEFAULT_API_RATE_LIMIT_PER_MINUTE,
     ingest_fixture_metadata_to_bronze,
+    ingest_fixture_statistics_for_fixtures_to_bronze,
     ingest_lineups_for_fixtures_to_bronze,
     ingest_player_stats_for_fixtures_to_bronze,
     ingest_senior_mens_international_bronze,
@@ -26,6 +27,7 @@ dbutils.widgets.text("silver_schema", "silver")
 dbutils.widgets.text("gold_schema", "gold")
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.dropdown("include_lineups", "true", ["true", "false"])
+dbutils.widgets.dropdown("include_statistics", "true", ["true", "false"])
 dbutils.widgets.text("endpoint_max_workers", "8")
 dbutils.widgets.text("api_rate_limit_per_minute", str(DEFAULT_API_RATE_LIMIT_PER_MINUTE))
 
@@ -56,6 +58,7 @@ lookahead_days = positive_int_widget("lookahead_days", DEFAULT_LOOKAHEAD_DAYS, m
 run_id = dbutils.widgets.get("run_id").strip() or f"intl-{utc_now_iso()}"
 force_refresh = dbutils.widgets.get("force_refresh").strip().lower() == "true"
 include_lineups = dbutils.widgets.get("include_lineups").strip().lower() == "true"
+include_statistics = dbutils.widgets.get("include_statistics").strip().lower() == "true"
 endpoint_max_workers = positive_int_widget("endpoint_max_workers", 8)
 api_rate_limit_per_minute = positive_int_widget(
     "api_rate_limit_per_minute",
@@ -114,12 +117,28 @@ if fixture_id:
             endpoint_max_workers=endpoint_max_workers,
             api_rate_limit_per_minute=api_rate_limit_per_minute,
         )
+    statistics_summary = None
+    if include_statistics:
+        statistics_summary = ingest_fixture_statistics_for_fixtures_to_bronze(
+            spark,
+            [int(fixture_id)],
+            api_key=api_key,
+            bronze_path=table_name(config, "bronze", "football_fixture_statistics_raw"),
+            run_id=run_id,
+            target_date=target_date or None,
+            force_refresh=force_refresh,
+            checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
+            logger=logger,
+            endpoint_max_workers=endpoint_max_workers,
+            api_rate_limit_per_minute=api_rate_limit_per_minute,
+        )
     display({
         "mode": "fixture_id",
         "fixture_id": int(fixture_id),
         "fixture_rows": len(fixture_payload.get("response", [])),
         "player_stats": player_summary.as_dict(),
         "lineups": lineup_summary.as_dict() if lineup_summary else None,
+        "statistics": statistics_summary.as_dict() if statistics_summary else None,
     })
 else:
     summary = ingest_senior_mens_international_bronze(
@@ -132,10 +151,12 @@ else:
         lookahead_days=lookahead_days,
         force_refresh=force_refresh,
         include_lineups=include_lineups,
+        include_statistics=include_statistics,
         bronze_fixtures_path=table_name(config, "bronze", "football_fixtures_raw"),
         bronze_eligibility_path=table_name(config, "bronze", "football_fixture_eligibility"),
         bronze_player_stats_path=table_name(config, "bronze", "football_match_raw"),
         bronze_lineups_path=table_name(config, "bronze", "football_lineups_raw"),
+        bronze_statistics_path=table_name(config, "bronze", "football_fixture_statistics_raw"),
         checkpoint_table=table_name(config, "bronze", "ingestion_state_checkpoint"),
         logger=logger,
         endpoint_max_workers=endpoint_max_workers,
