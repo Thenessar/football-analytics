@@ -316,9 +316,14 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** everything above landing (do last, per roadmap item 11 — "remove all unnecessary code... that are not used").
 
-### J1. Audit and remove dead code/models
+### J1. Audit and remove dead code/models — ✅ DONE (2026-07-06)
 - **Files:** candidates to check once Epic D lands: `dbt/models/marts/fct_football__player_shot_features.sql` (if folded into D2), any now-superseded logic in `football_analytics/modeling.py`, `football_analytics/orchestrator.py`, `football_analytics/reporting.py`, `run_pipeline.py`.
 - **Acceptance criteria:** each removal is justified by a grep/reference check showing no remaining callers; dbt `--exclude`/graph confirms no orphaned dependents.
+- **Implementation notes (each verified by repo-wide grep before deletion):**
+  - `fct_football__player_shot_features.sql` + its singular test + schema.yml block removed — no dbt model referenced it (training was repointed in F1). The physical gold Delta table is **not** dropped by removing the dbt model, so ad-hoc notebooks referencing the old table keep working until it's dropped manually.
+  - Legacy local simulation/report stack removed: `run_pipeline.py`, `football_analytics/orchestrator.py`, `football_analytics/modeling.py`, `football_analytics/reporting.py`, `football_analytics/pipeline.py` (only caller of `pipeline.py` was the orchestrator) and their four test files. Only intra-stack imports and their own tests referenced them; the Databricks medallion + inference pipelines replaced this flow.
+  - `jinja2` dropped from install dependencies (only `reporting.py` used it).
+  - Remaining mentions are historical documentation only (business_logic.md, this backlog, design doc). `dbt parse` confirms no orphaned dependents; pytest suite green (92 tests after removing the 4 legacy test modules).
 
 ---
 

@@ -1,4 +1,4 @@
-version: 2
+﻿version: 2
 
 models:
   - name: fct_football__team_match_context
@@ -107,7 +107,7 @@ models:
     description: >
       Row-level actual-vs-predicted view joining active player event
       predictions to the realized labels of completed fixtures. Groundwork for
-      the §16.3 monitoring list; feeds mon_football__prediction_monitoring.
+      the Â§16.3 monitoring list; feeds mon_football__prediction_monitoring.
 
   - name: mon_football__prediction_monitoring
     description: >
@@ -134,8 +134,8 @@ models:
       predictors are pre-match safe: Elo columns are _pre variants and the
       *_l5_count/_l5_p90 player history features come from the last 5 played
       appearances strictly prior to the fixture (ranked join, never the
-      current fixture). Supersedes fct_football__player_shot_features as the
-      canonical training source.
+      current fixture). Replaced the former fct_football__player_shot_features
+      mart (removed in backlog J1) as the canonical training source.
     tests:
       - unique_combination_of_columns:
           arguments:
@@ -639,100 +639,6 @@ models:
       - name: ranking_as_of_date
         tests:
           - not_null
-
-  - name: fct_football__player_shot_features
-    description: >
-      DEPRECATED — superseded by fct_football__player_event_features (see
-      docs/design/player_event_features_schema.md). Retained only until
-      training code is repointed (Epic F); scheduled for removal in backlog
-      ticket J1. Specialized gold player prop modeling mart with
-      structural-zero count labels, exposure, and strictly lagged rolling form
-      features for Poisson-LightGBM workflows.
-    tests:
-      - unique_combination_of_columns:
-          arguments:
-            combination_of_columns:
-              - fixture_id
-              - team_id
-              - player_id
-    columns:
-      - name: fixture_id
-        tests:
-          - not_null
-          - relationships:
-              arguments:
-                to: ref('stg_football__player_match_stats')
-                field: fixture_id
-      - name: player_id
-        tests:
-          - not_null
-      - name: games_minutes
-        tests:
-          - not_null
-      - name: exposure
-        tests:
-          - not_null
-      - name: shots_total
-        tests:
-          - not_null
-      - name: shots_on
-        tests:
-          - not_null
-      - name: dribbles_attempts
-        tests:
-          - not_null
-      - name: fouls_committed
-        tests:
-          - not_null
-      - name: offsides
-        tests:
-          - not_null
-      - name: tackles_interceptions
-        tests:
-          - not_null
-      - name: shots_total_l5_p90
-        tests:
-          - not_null
-      - name: dribbles_attempts_l5_p90
-        tests:
-          - not_null
-      - name: fouls_committed_l5_p90
-        tests:
-          - not_null
-      - name: shots_per_90
-        tests:
-          - not_null
-      - name: shots_on_per_90
-        tests:
-          - not_null
-      - name: team_elo_attack_pre
-        tests:
-          - not_null
-      - name: opponent_elo_defense_pre
-        tests:
-          - not_null
-      - name: player_offensive_elo_pre
-        tests:
-          - not_null
-      - name: player_defensive_elo_pre
-        tests:
-          - not_null
-      - name: team_lineup_attack_strength
-        tests:
-          - not_null
-      - name: team_lineup_defense_strength
-        tests:
-          - not_null
-      - name: opponent_formation
-        description: The formation used by the opposing team.
-      - name: formation_win_rate_pre
-        description: Historical win rate of the team's formation prior to the match.
-      - name: formation_count_pre
-        description: Number of preceding matches played using the team's formation.
-      - name: formation_matchup_win_rate_pre
-        description: Head-to-head win rate of the team's formation against the opponent's formation in preceding matches.
-      - name: formation_matchup_count_pre
-        description: Number of preceding head-to-head matches between these two formations.
 
   - name: fct_football__player_sapm
     description: Specialized gold S-APM-ready mart rebuilt from fct_football__player_match_features with position priors and context weights.
