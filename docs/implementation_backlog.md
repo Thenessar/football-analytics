@@ -239,19 +239,24 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic F (trained + registered models), Epic E (expected minutes), Epic D (feature mart), existing lineup ingestion.
 
-### G1. Inference orchestration script/notebook
+### G1. Inference orchestration script/notebook — ✅ DONE (2026-07-06)
 - **Files:** new script under `football_analytics/` (e.g., inference module) or new notebook alongside `notebooks/00_prepare_run.py`/`01_bronze_ingest.py`/`02_dbt_python_models.py`.
 - **Acceptance criteria:** implements the 10-step flow in §14.3 — fetch/refresh fixture metadata, fetch confirmed lineups, write to Bronze, run required dbt Silver/Gold transformations, build inference rows for confirmed players, estimate expected minutes, load MLflow model(s), generate predictions per player/target, store predictions, optionally display in notebook.
+- **Implementation notes:**
+  - `football_analytics/inference.py` holds the testable logic (guard rails, deterministic `prediction_set_id`, record building with §15.3 columns, UC model loading, append+active-flag writer). The module docstring maps each §14.3 step to where it runs.
+  - Job `prematch_inference_pipeline` (`resources/prematch_inference_pipeline.yml`): `inference_ingest` notebook (steps 1–3; lineups always `force_refresh` inside the window) → `dbt_build_inference` dbt task (step 4; rebuilds the lineup-downstream SQL models against existing Elo materializations) → `inference_predict` notebook (steps 5–10). Expected minutes arrive via the feature mart join (step 6). Note: the prediction writer already implements §15.4 Option C — see H2.
 
-### G2. Missing-lineup guard rails
+### G2. Missing-lineup guard rails — ✅ DONE (2026-07-06)
 - **Depends on:** G1.
 - **Acceptance criteria:**
   - Live/production mode: run is skipped or fails with a clear, loggable reason when either team's lineup is not confirmed (§9.6, §14.4).
   - Exploratory/offline mode: supports mock/projected lineups but tags output as non-official (`lineup_source != confirmed_api`).
+- **Implementation notes:** `resolve_lineup_source` raises `MissingLineupError` in live mode (predict notebook logs `inference_skipped_missing_lineups` with the reason and skips that fixture); exploratory mode proceeds with `lineup_source='projected'`. Confirmation = both teams with ≥11 distinct starters in the inference rows (`fixture_has_confirmed_starting_xi`). Unit-tested in `tests/test_inference.py`.
 
-### G3. Trigger window scheduling
+### G3. Trigger window scheduling — ✅ DONE (2026-07-06)
 - **Depends on:** G1.
 - **Acceptance criteria:** job/schedule polls or runs frequently enough to catch the T-60 to T-40 minute window (§14.1); document the chosen polling cadence and its trade-offs (missed window vs. redundant runs).
+- **Implementation notes:** 10-minute cron (`0 0/10 * * * ?`, paused by default via `schedule_pause_status`) guarantees ≥2 attempts inside the 20-minute window; redundant no-fixture runs are cheap (single Silver query) and reruns are idempotent (checkpointed bronze + deterministic `prediction_set_id`). Trade-offs documented in the yml header comment; guarded by `test_prematch_inference_job_polls_the_lineup_trigger_window`.
 
 ---
 

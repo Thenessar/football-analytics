@@ -149,6 +149,24 @@ def test_bundle_passes_statistics_toggle_to_bronze_ingest():
     assert 'table_name(config, "bronze", "football_fixture_statistics_raw")' in notebook
 
 
+def test_prematch_inference_job_polls_the_lineup_trigger_window():
+    bundle = (ROOT / "resources" / "prematch_inference_pipeline.yml").read_text(encoding="utf-8")
+
+    assert "prematch_inference_pipeline" in bundle
+    # 10-minute polling catches the T-60..T-40 confirmed-lineup window at
+    # least twice per fixture (business_logic.md 14.1).
+    assert 'quartz_cron_expression: "0 0/10 * * * ?"' in bundle
+    assert "pause_status: ${var.schedule_pause_status}" in bundle
+    for task_name in ("inference_ingest", "dbt_build_inference", "inference_predict"):
+        assert f"task_key: {task_name}" in bundle
+    assert "../notebooks/03_prematch_inference_ingest.py" in bundle
+    assert "../notebooks/04_prematch_inference_predict.py" in bundle
+    assert "fct_football__player_event_features" in bundle
+    assert 'mode: "{{job.parameters.mode}}"' in bundle
+    assert '- name: mode' in bundle
+    assert 'default: "live"' in bundle
+
+
 def test_bundle_passes_default_lookahead_to_notebook_tasks():
     bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
@@ -221,6 +239,8 @@ def test_databricks_notebook_files_match_medallion_order():
         "00_prepare_run.py",
         "01_bronze_ingest.py",
         "02_dbt_python_models.py",
+        "03_prematch_inference_ingest.py",
+        "04_prematch_inference_predict.py",
     ]
 
 

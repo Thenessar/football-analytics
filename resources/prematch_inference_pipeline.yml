@@ -1,0 +1,110 @@
+# Pre-match inference job (business_logic.md §14).
+#
+# Trigger window (§14.1): confirmed lineups appear roughly T-60 to T-40
+# minutes before kickoff. A 10-minute polling cadence guarantees at least two
+# attempts inside that 20-minute window; the trade-off is redundant runs on
+# days without fixtures, which stay cheap because fixture discovery is a
+# single Silver-table query and reruns are idempotent (checkpointed bronze
+# ingestion, deterministic prediction_set_id). Slower cadences (>= 20 min)
+# risk missing the window entirely for fixtures whose lineups land late.
+resources:
+  jobs:
+    prematch_inference_pipeline:
+      name: ${bundle.target}-prematch-inference-pipeline
+      max_concurrent_runs: 1
+
+      schedule:
+        quartz_cron_expression: "0 0/10 * * * ?"
+        timezone_id: UTC
+        pause_status: ${var.schedule_pause_status}
+
+      performance_target: ${var.serverless_performance_target}
+
+      parameters:
+        - name: fixture_id
+          default: ${var.fixture_id}
+        - name: window_minutes
+          default: "75"
+        - name: run_id
+          default: ${var.run_id}
+        - name: catalog
+          default: ${var.catalog}
+        - name: bronze_schema
+          default: ${var.bronze_schema}
+        - name: silver_schema
+          default: ${var.silver_schema}
+        - name: gold_schema
+          default: ${var.gold_schema}
+        - name: mode
+          default: "live"
+        - name: registered_model_prefix
+          default: "football_analytics.gold.player_event"
+        - name: model_alias
+          default: ""
+        - name: targets
+          default: ""
+        - name: api_rate_limit_per_minute
+          default: ${var.api_rate_limit_per_minute}
+
+      tasks:
+        - task_key: inference_ingest
+          notebook_task:
+            notebook_path: ../notebooks/03_prematch_inference_ingest.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+              window_minutes: "{{job.parameters.window_minutes}}"
+              run_id: "{{job.run_id}}"
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+              api_rate_limit_per_minute: "{{job.parameters.api_rate_limit_per_minute}}"
+          environment_key: notebook_serverless
+
+        - task_key: dbt_build_inference
+          depends_on:
+            - task_key: inference_ingest
+          dbt_task:
+            project_directory: ../dbt
+            source: WORKSPACE
+            warehouse_id: ${var.sql_warehouse_id}
+            catalog: ${var.catalog}
+            schema: ${var.silver_schema}
+            commands:
+              - dbt deps
+              - "dbt build --select stg_football__fixtures stg_football__lineups stg_football__team_match_stats fct_football__team_match_context fct_football__lineup_elo_strength fct_football__formation_matchup_history fct_football__team_match_stats_context fct_football__player_expected_minutes fct_football__player_event_features --vars '{catalog: \"{{job.parameters.catalog}}\", bronze_schema: \"{{job.parameters.bronze_schema}}\", silver_schema: \"{{job.parameters.silver_schema}}\", gold_schema: \"{{job.parameters.gold_schema}}\"}'"
+          environment_key: dbt_serverless
+
+        - task_key: inference_predict
+          depends_on:
+            - task_key: dbt_build_inference
+          notebook_task:
+            notebook_path: ../notebooks/04_prematch_inference_predict.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+              window_minutes: "{{job.parameters.window_minutes}}"
+              run_id: "{{job.run_id}}"
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
+              mode: "{{job.parameters.mode}}"
+              registered_model_prefix: "{{job.parameters.registered_model_prefix}}"
+              model_alias: "{{job.parameters.model_alias}}"
+              targets: "{{job.parameters.targets}}"
+          environment_key: notebook_serverless
+
+      environments:
+        - environment_key: notebook_serverless
+          spec:
+            environment_version: ${var.serverless_environment_version}
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl
+              - lightgbm>=4.0.0
+              - mlflow>=2.14.0
+        - environment_key: dbt_serverless
+          spec:
+            environment_version: ${var.serverless_environment_version}
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/football_analytics-0.1.0-py3-none-any.whl
+              - dbt-databricks>=1.8.0
