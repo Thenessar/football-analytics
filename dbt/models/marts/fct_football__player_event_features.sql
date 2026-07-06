@@ -116,10 +116,21 @@ inference_rows as (
     where team_context.status_short not in ('FT', 'AET', 'PEN')
 ),
 
+-- A stale fixture status could otherwise yield both a played (training) row
+-- and a lineup-derived (inference) row for the same player; labels win.
+inference_rows_without_labels as (
+    select inference_rows.*
+    from inference_rows
+    left anti join training_rows
+        on inference_rows.fixture_id = training_rows.fixture_id
+       and inference_rows.team_id = training_rows.team_id
+       and inference_rows.player_id = training_rows.player_id
+),
+
 base as (
     select * from training_rows
     union all
-    select * from inference_rows
+    select * from inference_rows_without_labels
 ),
 
 -- Last 5 played appearances strictly prior to the row's fixture. A ranked

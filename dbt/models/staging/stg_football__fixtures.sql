@@ -1,7 +1,8 @@
 with bronze as (
     select
         raw_payload,
-        response_hash
+        response_hash,
+        ingested_at_utc
     from {{ source('bronze', 'football_fixtures_raw') }}
 ),
 
@@ -11,14 +12,16 @@ parsed as (
             raw_payload,
             'struct<response:array<struct<fixture:struct<id:int,date:string,status:struct<short:string,long:string>,venue:struct<name:string,city:string>>,league:struct<id:int,name:string,season:int,country:string>,teams:struct<home:struct<id:int,name:string>,away:struct<id:int,name:string>>,goals:struct<home:int,away:int>>>>'
         ) as payload,
-        response_hash
+        response_hash,
+        ingested_at_utc
     from bronze
 ),
 
 flattened as (
     select
         explode_outer(payload.response) as fixture_entry,
-        response_hash
+        response_hash,
+        ingested_at_utc
     from parsed
 ),
 
@@ -40,6 +43,7 @@ typed as (
         fixture_entry.fixture.venue.name as venue,
         fixture_entry.league.country as country,
         response_hash,
+        ingested_at_utc,
         current_timestamp() as updated_at_utc
     from flattened
     where fixture_entry.fixture.id is not null
@@ -60,7 +64,13 @@ filtered as (
 deduped as (
     select *
     from filtered
-    qualify row_number() over (partition by fixture_id order by updated_at_utc desc) = 1
+    -- updated_at_utc is a run timestamp and ties within a run; the bronze
+    -- ingestion timestamp is the real recency signal, so a fixture re-fetched
+    -- after completion deterministically resolves to its latest status.
+    qualify row_number() over (
+        partition by fixture_id
+        order by ingested_at_utc desc, updated_at_utc desc
+    ) = 1
 )
 
 select * from deduped
