@@ -42,6 +42,15 @@ team_stats as (
     from {{ ref('stg_football__team_match_stats') }}
 ),
 
+team_elo as (
+    select
+        fixture_id,
+        team_id,
+        team_elo_general_pre,
+        opponent_elo_general_pre
+    from {{ ref('fct_football__team_elo_history') }}
+),
+
 joined as (
     select
         team_context.*,
@@ -117,7 +126,13 @@ rolled as (
             partition by team_id
             order by fixture_date_utc, fixture_id
             rows between 5 preceding and 1 preceding
-        ) as shots_allowed_l5
+        ) as shots_allowed_l5,
+
+        avg(possession_pct) over (
+            partition by team_id, team_formation
+            order by fixture_date_utc, fixture_id
+            rows between 10 preceding and 1 preceding
+        ) as formation_possession_profile
     from joined
 ),
 
@@ -147,6 +162,24 @@ featured as (
     left join rolled as opponent_rows
         on team_rows.fixture_id = opponent_rows.fixture_id
        and team_rows.opponent_team_id = opponent_rows.team_id
+),
+
+elo_enriched as (
+    select
+        featured.*,
+        coalesce(team_elo.team_elo_general_pre, 1500.0) as team_elo_general_pre,
+        coalesce(team_elo.opponent_elo_general_pre, 1500.0) as opponent_elo_general_pre,
+        1.0 / (
+            1.0 + pow(
+                10.0,
+                (coalesce(team_elo.opponent_elo_general_pre, 1500.0)
+                 - coalesce(team_elo.team_elo_general_pre, 1500.0)) / 400.0
+            )
+        ) as elo_expected_score
+    from featured
+    left join team_elo
+        on featured.fixture_id = team_elo.fixture_id
+       and featured.team_id = team_elo.team_id
 )
 
 select
@@ -199,5 +232,11 @@ select
     team_fouls_l5,
     opponent_fouls_drawn_allowed_l5,
 
+    team_elo_general_pre,
+    opponent_elo_general_pre,
+    elo_expected_score,
+    elo_expected_score * expected_possession_share as elo_possession_interaction,
+    formation_possession_profile,
+
     current_timestamp() as updated_at_utc
-from featured
+from elo_enriched

@@ -102,8 +102,9 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Adds rolling/historical features called out in §11.5: `team_possession_l5_avg`, `opponent_possession_l5_avg`, `expected_possession_share`, `team_passes_l5_p90_or_per_match`, `opponent_passes_allowed_l5`, `team_shots_l5`, `opponent_shots_allowed_l5`, `team_fouls_l5`, `opponent_fouls_drawn_allowed_l5`.
   - All rolling windows use only fixtures strictly prior to the current fixture (leakage check — see D-series and Epic F leakage rules in §13.4).
 
-### C2. Decide + document expected-possession approach
+### C2. Decide + document expected-possession approach — ✅ DONE (2026-07-06)
 - **Depends on:** C1 (needs raw possession history to experiment with).
+- **Decision:** Option (b) — engineered features from Elo + team stats. Recorded in `docs/adr/0001-expected-possession-approach.md`. Implemented in `fct_football__team_match_stats_context`: `elo_expected_score`, `elo_possession_interaction` (= elo_expected_score × expected_possession_share), and `formation_possession_profile` (team's L10 possession with the same formation, nullable). Note: the Elo join moves this mart downstream of the python Elo models (built in `dbt_build_python_dependents` phase). Option (a) explicit model deferred until Epic F feature importances justify it.
 - **Acceptance criteria:**
   - Written decision (in this backlog's follow-up or a short ADR) on whether expected possession is: (a) an explicit intermediate model, (b) an engineered feature from Elo + team stats, or (c) left implicit for downstream models — per the open question in §11.5.
   - Chosen approach implemented as `elo_possession_interaction` and/or `formation_possession_profile` feature(s) in C1 or a follow-up column set.
