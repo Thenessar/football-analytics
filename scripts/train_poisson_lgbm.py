@@ -141,6 +141,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-leaves", type=int, default=31)
     parser.add_argument("--min-child-samples", type=int, default=80)
     parser.add_argument("--num-boost-round", type=int, default=800)
+    parser.add_argument(
+        "--early-stopping-rounds",
+        type=int,
+        default=50,
+        help="Stop each target at its best validation iteration; 0 disables.",
+    )
     return parser.parse_args()
 
 
@@ -180,6 +186,7 @@ def main() -> None:
         num_leaves=args.num_leaves,
         min_child_samples=args.min_child_samples,
         num_boost_round=args.num_boost_round,
+        early_stopping_rounds=args.early_stopping_rounds,
     )
     feature_table_version = _feature_table_version(spark, args.feature_table)
     result = train_poisson_lightgbm_with_mlflow(

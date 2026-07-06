@@ -194,6 +194,7 @@ class PoissonLightGBMConfig:
     num_leaves: int = 31
     min_child_samples: int = 80
     num_boost_round: int = 800
+    early_stopping_rounds: int = 50
     feature_fraction: float = 0.85
     bagging_fraction: float = 0.85
     bagging_freq: int = 1
@@ -224,6 +225,7 @@ class PoissonLightGBMConfig:
             "num_leaves": self.num_leaves,
             "min_child_samples": self.min_child_samples,
             "num_boost_round": self.num_boost_round,
+            "early_stopping_rounds": self.early_stopping_rounds,
             "feature_columns": json.dumps(list(feature_columns)),
         }
 
@@ -484,6 +486,15 @@ def train_poisson_lightgbm_with_mlflow(
     cfg = config or PoissonLightGBMConfig()
     selected_features = _select_available_features(train_df, feature_columns)
 
+    # Databricks enables MLflow autologging by default, which records the eval
+    # metric at every boosting iteration against each logged model. That blows
+    # the free-tier cap of 1000 metrics per logged model (800 rounds x 2
+    # datasets = 1600). Everything needed is logged explicitly below.
+    try:
+        mlflow.lightgbm.autolog(disable=True)
+    except Exception:
+        pass
+
     if experiment_name:
         mlflow.set_experiment(experiment_name)
 
@@ -538,13 +549,24 @@ def train_poisson_lightgbm_with_mlflow(
                     free_raw_data=False,
                 )
 
+                callbacks = [lgb.log_evaluation(period=100)]
+                if cfg.early_stopping_rounds and cfg.early_stopping_rounds > 0:
+                    callbacks.append(
+                        lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)
+                    )
                 booster = lgb.train(
                     cfg.to_lightgbm_params(),
                     train_set,
                     num_boost_round=cfg.num_boost_round,
                     valid_sets=[train_set, valid_set],
                     valid_names=["train", "validation"],
-                    callbacks=[lgb.log_evaluation(period=100)],
+                    callbacks=callbacks,
+                )
+                # Each target keeps its best-validation iteration (LightGBM
+                # predicts with best_iteration by default after early stop).
+                mlflow.log_param(
+                    f"{target}_best_iteration",
+                    booster.best_iteration or cfg.num_boost_round,
                 )
                 model = ExposurePoissonLightGBMModel(
                     booster=booster,
