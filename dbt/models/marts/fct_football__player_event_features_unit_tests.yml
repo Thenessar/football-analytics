@@ -36,8 +36,8 @@ unit_tests:
         rows: []
     expect:
       rows:
-        - {fixture_id: 1, player_id: 7, appearances_l5_count: 0, minutes_l5: 0.0, shots_total_l5_count: 0.0, shots_total: 2.0}
-        - {fixture_id: 2, player_id: 7, appearances_l5_count: 1, minutes_l5: 90.0, shots_total_l5_count: 2.0, shots_total: 2.0}
-        - {fixture_id: 3, player_id: 7, appearances_l5_count: 2, minutes_l5: 180.0, shots_total_l5_count: 4.0, shots_total: 2.0}
-        - {fixture_id: 4, player_id: 7, appearances_l5_count: 3, minutes_l5: 270.0, shots_total_l5_count: 6.0, shots_total: 2.0}
+        - {fixture_id: 1, player_id: 7, appearances_l5_count: 0, minutes_l5: 0.0, shots_total_l5_count: 0.0, shots_total_l5_p90: 0.0, shots_total: 2.0}
+        - {fixture_id: 2, player_id: 7, appearances_l5_count: 1, minutes_l5: 90.0, shots_total_l5_count: 2.0, shots_total_l5_p90: 2.0, shots_total: 2.0}
+        - {fixture_id: 3, player_id: 7, appearances_l5_count: 2, minutes_l5: 180.0, shots_total_l5_count: 4.0, shots_total_l5_p90: 2.0, shots_total: 2.0}
+        - {fixture_id: 4, player_id: 7, appearances_l5_count: 3, minutes_l5: 270.0, shots_total_l5_count: 6.0, shots_total_l5_p90: 2.0, shots_total: 2.0}
         - {fixture_id: 5, player_id: 7, appearances_l5_count: 4, minutes_l5: 360.0, shots_total_l5_count: 8.0, shots_total_l5_p90: 2.0, shots_total: 50.0}
