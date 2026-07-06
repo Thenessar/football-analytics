@@ -327,6 +327,7 @@ def test_fixture_endpoint_selection_fetches_player_stats_only_for_completed_matc
 
     assert ingestion.fixture_ids_for_player_stats(fixtures) == (3,)
     assert ingestion.fixture_ids_for_lineups(fixtures) == (1, 2, 3)
+    assert ingestion.fixture_ids_for_fixture_statistics(fixtures) == (3,)
 
 
 def test_bronze_fixture_metadata_rows_include_request_hash_and_run_context():
@@ -427,6 +428,90 @@ def test_player_stats_force_refresh_refetches_completed_fixture_ids(monkeypatch)
     )
 
     assert called_fixture_ids == [10, 11]
+
+
+def _fixture_statistics_payload(team_id=1):
+    return {
+        "response": [
+            {
+                "team": {"id": team_id, "name": "Home"},
+                "statistics": [{"type": "Ball Possession", "value": "61%"}],
+            },
+            {
+                "team": {"id": team_id + 1, "name": "Away"},
+                "statistics": [{"type": "Ball Possession", "value": "39%"}],
+            },
+        ]
+    }
+
+
+def test_fixture_statistics_skips_completed_fixture_ids(monkeypatch):
+    called_fixture_ids = []
+
+    def fake_fetch(endpoint, params, *, api_key=None):
+        assert endpoint == ingestion.STATISTICS_ENDPOINT
+        called_fixture_ids.append(params["fixture"])
+        return _fixture_statistics_payload()
+
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+
+    summary = ingestion.ingest_fixture_statistics_for_fixtures_to_bronze(
+        spark=None,
+        fixture_ids=[10, 11],
+        completed_fixture_ids=[10],
+    )
+
+    assert called_fixture_ids == [11]
+    assert summary.skipped_fixtures == 1
+    assert summary.statistics_ingested == 1
+
+
+def test_fixture_statistics_force_refresh_refetches_completed_fixture_ids(monkeypatch):
+    called_fixture_ids = []
+
+    def fake_fetch(endpoint, params, *, api_key=None):
+        called_fixture_ids.append(params["fixture"])
+        return _fixture_statistics_payload()
+
+    monkeypatch.setattr(ingestion, "fetch_football_api_payload", fake_fetch)
+
+    ingestion.ingest_fixture_statistics_for_fixtures_to_bronze(
+        spark=None,
+        fixture_ids=[10, 11],
+        completed_fixture_ids=[10],
+        force_refresh=True,
+    )
+
+    assert called_fixture_ids == [10, 11]
+
+
+def test_fixture_statistics_empty_payload_is_skipped_for_retry(monkeypatch):
+    checkpoint_records = []
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(
+        ingestion,
+        "fetch_football_api_payload",
+        lambda endpoint, params, *, api_key=None, logger=None: {"response": []},
+    )
+    monkeypatch.setattr(ingestion, "write_fixture_statistics_bronze", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ingestion,
+        "upsert_endpoint_checkpoint",
+        lambda spark, **kwargs: checkpoint_records.append(kwargs),
+    )
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", lambda *args, **kwargs: None)
+
+    summary = ingestion.ingest_fixture_statistics_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10],
+        completed_fixture_ids=[],
+    )
+
+    assert checkpoint_records[-1]["status"] == ingestion.CHECKPOINT_SKIPPED
+    assert checkpoint_records[-1]["response_hash"] == ingestion.payload_hash({"response": []})
+    assert summary.statistics_ingested == 0
+    assert summary.statistics_skipped == 1
 
 
 def test_player_stats_empty_payload_is_skipped_for_retry(monkeypatch):
@@ -613,6 +698,7 @@ def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypa
         skipped_fixtures=({"fixture": {"id": 200}},),
     )
     player_fixture_ids = []
+    statistics_fixture_ids = []
 
     monkeypatch.setattr(
         ingestion,
@@ -632,7 +718,22 @@ def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypa
             player_stat_payloads_ingested=len(fixture_ids),
         )
 
+    def fake_statistics_ingest(spark, fixture_ids, **kwargs):
+        statistics_fixture_ids.extend(fixture_ids)
+        return ingestion.BronzeIngestionSummary(
+            requested_dates=(),
+            discovered_fixtures=len(fixture_ids),
+            ingested_fixtures=len(fixture_ids),
+            skipped_fixtures=0,
+            failed_fixtures=0,
+            fixture_ids=tuple(fixture_ids),
+            statistics_ingested=len(fixture_ids),
+        )
+
     monkeypatch.setattr(ingestion, "ingest_player_stats_for_fixtures_to_bronze", fake_player_ingest)
+    monkeypatch.setattr(
+        ingestion, "ingest_fixture_statistics_for_fixtures_to_bronze", fake_statistics_ingest
+    )
 
     summary = ingestion.ingest_senior_mens_international_bronze(
         spark=None,
@@ -641,8 +742,10 @@ def test_medallion_bronze_calls_player_stats_only_for_filtered_fixtures(monkeypa
     )
 
     assert player_fixture_ids == [100]
+    assert statistics_fixture_ids == [100]
     assert summary.discovered_fixtures == 2
     assert summary.eligible_fixtures == 1
+    assert summary.statistics_ingested == 1
 
 
 def test_medallion_bronze_keeps_scheduled_fixture_and_skips_missing_lineups(monkeypatch):

@@ -23,13 +23,20 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - `dbt/models/sources.yml`: registered `football_fixture_statistics_raw` as a bronze source.
   - Tests: `tests/test_databricks_ingestion.py` covers the path contract and envelope/run-metadata shape (`test_fixture_statistics_bronze_writes_raw_envelope_with_run_context`).
 
-### A2. Add `STATISTICS_ENDPOINT = "fixtures/statistics"` and ingestion plan wiring
+### A2. Add `STATISTICS_ENDPOINT = "fixtures/statistics"` and ingestion plan wiring — ✅ DONE (2026-07-06)
 - **Files:** `football_analytics/databricks_ingestion.py` (add alongside `FIXTURES_ENDPOINT`, `PLAYER_STATS_ENDPOINT`, `LINEUPS_ENDPOINT`; extend `endpoint_ingestion_plan`, checkpoint marking/upsert helpers).
 - **Depends on:** A1.
 - **Acceptance criteria:**
   - `GET /fixtures/statistics?fixture=<fixture_id>` is called only for fixtures in a completed state (`FT`, `AET`, `PEN`), per business_logic.md §9.6.
   - Endpoint participates in the existing checkpoint skip/force-refresh/`response_hash` logic (§9.7) — no duplicate calls for already-`COMPLETED` checkpoint rows unless `force_refresh=true`.
   - Parallel fetch path (`_iter_fixture_endpoint_fetch_results` equivalent) reused rather than duplicated.
+- **Implementation notes:**
+  - `STATISTICS_ENDPOINT` constant already landed with A1.
+  - Added `ingest_fixture_statistics_for_fixtures_to_bronze()` mirroring the player-stats function: reads completed checkpoint IDs for the statistics endpoint, builds `endpoint_ingestion_plan` (so `force_refresh` and completed-skip work identically), fetches via the shared `_iter_fixture_endpoint_fetch_results`, writes via `write_fixture_statistics_bronze`, and records `response_hash` on every checkpoint upsert. Empty payloads land in Bronze but checkpoint as `SKIPPED` so a later run retries them.
+  - Added `fixture_statistics_payload_has_data()` and `fixture_ids_for_fixture_statistics()` (delegates to the completed-only player-stats filter — same `FT`/`AET`/`PEN` rule).
+  - `ingest_senior_mens_international_bronze()` now takes `include_statistics=True` and `bronze_statistics_path` and calls statistics ingestion per date for completed fixtures only; `BronzeIngestionSummary` gained `statistics_ingested`/`statistics_skipped`.
+  - Tests: completed-checkpoint skip, `force_refresh` refetch, completed-only selection, empty-payload-→-SKIPPED-with-hash, and orchestrator wiring (`tests/test_databricks_ingestion.py`). Note this already covers most of A4's matrix except an explicit hash-change-triggers-refresh test.
+  - **For A3:** the notebook/job still needs to pass `bronze_statistics_path=table_name(config, "bronze", "football_fixture_statistics_raw")` (and optionally an `include_statistics` widget); until then the orchestrator defaults to the legacy `/mnt/...` path.
 
 ### A3. Wire statistics ingestion into the orchestration notebook/job
 - **Files:** `notebooks/01_bronze_ingest.py`, `resources/international_medallion_pipeline.yml`.
