@@ -301,6 +301,7 @@ def test_dbt_project_contains_expected_models_and_seed():
         "models/staging/stg_football__team_match_stats.sql",
         "models/marts/fct_football__team_match_context.sql",
         "models/marts/fct_football__team_match_stats_context.sql",
+        "models/marts/fct_football__player_expected_minutes.sql",
         "models/marts/dim_football__rating_baseline.sql",
         "models/marts/fct_football__team_elo_history.py",
         "models/marts/fct_football__player_elo_history.py",

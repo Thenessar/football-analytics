@@ -149,8 +149,13 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** existing player match-stats history (already implemented); can proceed in parallel with Epic D, but D2 should consume its output, so sequence E before or alongside D2.
 
-### E1. Implement `fct_football__player_expected_minutes`
+### E1. Implement `fct_football__player_expected_minutes` — ✅ DONE (2026-07-06)
 - **Files:** new file in `dbt/models/marts/`.
+- **Implementation notes:**
+  - Grain: one row per fixture/team/player for everyone named in the lineup (starters **and** substitutes — subs get estimates too since they're valid prediction targets; filter on `is_starting` if only XI is wanted).
+  - Estimator: trimmed mean over last 5 played appearances (drop single min + max when ≥3 observations, else plain average, else role prior: starter 85 / substitute 15). Recorded per row in `expected_minutes_method`. Clamped to [0, 120].
+  - "Played appearance" = `games_minutes` 1..130, matching `fct_football__player_match_features`; history joins strictly prior fixtures (date, then fixture_id tiebreak) so the current fixture never feeds its own estimate.
+  - Pure SQL model (no python deps) — builds in the `dbt_build` phase.
 - **Acceptance criteria:**
   - Grain: one row per fixture/team/player for confirmed-lineup players.
   - Implements the recommended first estimator from §12.3: `expected_minutes_l5_trimmed_or_median` (trimmed mean or median over last 5 appearances).
