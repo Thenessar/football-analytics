@@ -17,6 +17,7 @@ def _player_stats_payload(team_id=1):
 def test_delta_paths_match_bronze_and_silver_contract():
     assert ingestion.BRONZE_FOOTBALL_MATCH_RAW_PATH == "/mnt/syndicate/bronze/football_match_raw"
     assert ingestion.BRONZE_LINEUPS_RAW_PATH == "/mnt/syndicate/bronze/football_lineups_raw"
+    assert ingestion.BRONZE_FIXTURE_STATISTICS_RAW_PATH == "/mnt/syndicate/bronze/football_fixture_statistics_raw"
     assert ingestion.INGESTION_STATE_CHECKPOINT_TABLE == "default.bronze_ingestion_state_checkpoint"
 
 
@@ -342,6 +343,50 @@ def test_bronze_fixture_metadata_rows_include_request_hash_and_run_context():
     assert rows[0][0] == "run-1"
     assert rows[0][2] == "fixtures"
     assert rows[0][4] == "2026-06-25"
+    assert rows[0][6] == ingestion.payload_hash(payload)
+
+
+def test_fixture_statistics_bronze_writes_raw_envelope_with_run_context(monkeypatch):
+    captured = {}
+    payload = {
+        "response": [
+            {
+                "team": {"id": 26, "name": "Argentina"},
+                "statistics": [{"type": "Ball Possession", "value": "61%"}],
+            }
+        ]
+    }
+
+    def fake_write(spark, api_payloads, **kwargs):
+        captured["api_payloads"] = tuple(api_payloads)
+        captured.update(kwargs)
+
+    monkeypatch.setattr(ingestion, "write_bronze_raw_envelopes", fake_write)
+
+    ingestion.write_fixture_statistics_bronze(
+        spark=object(),
+        api_payloads=[payload],
+        fixture_id=1489437,
+        run_id="run-1",
+    )
+
+    assert captured["api_payloads"] == (payload,)
+    assert captured["run_id"] == "run-1"
+    assert captured["source_endpoint"] == ingestion.STATISTICS_ENDPOINT
+    assert captured["request_params"] == {"fixture": 1489437}
+    assert captured["fixture_id"] == 1489437
+    assert captured["bronze_path"] == ingestion.BRONZE_FIXTURE_STATISTICS_RAW_PATH
+
+    rows = ingestion._json_payload_rows(
+        [payload],
+        run_id="run-1",
+        source_endpoint=ingestion.STATISTICS_ENDPOINT,
+        request_params={"fixture": 1489437},
+        fixture_id=1489437,
+    )
+    assert rows[0][0] == "run-1"
+    assert rows[0][1] == 1489437
+    assert rows[0][2] == "fixtures/statistics"
     assert rows[0][6] == ingestion.payload_hash(payload)
 
 

@@ -12,3 +12,5 @@ sources:
         description: Raw `/fixtures/players` response envelopes persisted as JSON strings.
       - name: football_lineups_raw
         description: Raw `/fixtures/lineups` response envelopes persisted as JSON strings.
+      - name: football_fixture_statistics_raw
+        description: Raw `/fixtures/statistics` response envelopes persisted as JSON strings.

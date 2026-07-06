@@ -24,6 +24,7 @@ BRONZE_FIXTURES_RAW_PATH = "/mnt/syndicate/bronze/football_fixtures_raw"
 BRONZE_FIXTURES_ELIGIBILITY_PATH = "/mnt/syndicate/bronze/football_fixture_eligibility"
 BRONZE_PLAYER_STATS_RAW_PATH = BRONZE_FOOTBALL_MATCH_RAW_PATH
 BRONZE_LINEUPS_RAW_PATH = "/mnt/syndicate/bronze/football_lineups_raw"
+BRONZE_FIXTURE_STATISTICS_RAW_PATH = "/mnt/syndicate/bronze/football_fixture_statistics_raw"
 INGESTION_STATE_CHECKPOINT_TABLE = "default.bronze_ingestion_state_checkpoint"
 CHECKPOINT_PENDING = "PENDING"
 CHECKPOINT_COMPLETED = "COMPLETED"
@@ -40,6 +41,7 @@ DEFAULT_LOOKAHEAD_DAYS = 7
 FIXTURES_ENDPOINT = "fixtures"
 PLAYER_STATS_ENDPOINT = "fixtures/players"
 LINEUPS_ENDPOINT = "fixtures/lineups"
+STATISTICS_ENDPOINT = "fixtures/statistics"
 DEFAULT_API_RATE_LIMIT_PER_MINUTE = 240
 QUOTA_ERROR_TOKENS = (
     "rate limit",
@@ -791,6 +793,23 @@ def _football_api_lineups_schema():
     )
 
 
+def _football_api_fixture_statistics_schema():
+    _, ArrayType, IntegerType, StringType, StructField, StructType = _require_pyspark()
+    return StructType([
+        StructField("response", ArrayType(StructType([
+            StructField("team", StructType([
+                StructField("id", IntegerType()),
+                StructField("name", StringType()),
+            ])),
+            StructField("statistics", ArrayType(StructType([
+                StructField("type", StringType()),
+                # Mixed provider types (integers, "32%", nulls) land as strings; Silver casts them.
+                StructField("value", StringType()),
+            ]))),
+        ])))]
+    )
+
+
 def write_player_stats_bronze(
     spark,
     api_payloads: Iterable[Mapping],
@@ -1059,6 +1078,25 @@ def write_lineups_bronze(
         api_payloads,
         run_id=run_id,
         source_endpoint=LINEUPS_ENDPOINT,
+        request_params={"fixture": int(fixture_id)},
+        fixture_id=int(fixture_id),
+        bronze_path=bronze_path,
+    )
+
+
+def write_fixture_statistics_bronze(
+    spark,
+    api_payloads: Iterable[Mapping],
+    *,
+    fixture_id: int,
+    run_id: str,
+    bronze_path: str = BRONZE_FIXTURE_STATISTICS_RAW_PATH,
+) -> None:
+    write_bronze_raw_envelopes(
+        spark,
+        api_payloads,
+        run_id=run_id,
+        source_endpoint=STATISTICS_ENDPOINT,
         request_params={"fixture": int(fixture_id)},
         fixture_id=int(fixture_id),
         bronze_path=bronze_path,
