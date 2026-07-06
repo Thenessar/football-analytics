@@ -49,12 +49,17 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Job yml: added `include_statistics` job parameter and base_parameter pass-through on `bronze_ingest`; task graph untouched.
   - Test: `test_bundle_passes_statistics_toggle_to_bronze_ingest` in `tests/test_databricks_bundle_and_config.py`.
 
-### A4. Checkpoint/idempotency tests for the new endpoint
+### A4. Checkpoint/idempotency tests for the new endpoint — ✅ DONE (2026-07-06)
 - **Depends on:** A2.
 - **Acceptance criteria:**
   - Test proves a completed checkpoint row is skipped without `force_refresh`.
   - Test proves changed `response_hash` triggers a refresh.
   - Test proves fixtures not yet completed are excluded from the plan.
+- **Implementation notes (all in `tests/test_databricks_ingestion.py`):**
+  - `test_fixture_statistics_completed_checkpoint_rows_skip_api_calls` — completed checkpoint rows (read from the checkpoint table via `completed_checkpoint_fixture_ids` with `endpoint=fixtures/statistics`) suppress refetching without `force_refresh`.
+  - `test_fixture_statistics_refresh_lands_changed_payload_and_new_hash` — interpretation note: the plan cannot detect a hash change without fetching, so per §9.7 the refresh trigger is `force_refresh`; the test proves a changed payload is re-landed in Bronze and the checkpoint `response_hash` is updated to the new hash. If true hash-diff-driven skip/write logic is wanted later, that's a new feature ticket, not test-only work.
+  - `test_fixture_statistics_plan_excludes_uncompleted_fixtures` — only `FT`/`AET`/`PEN` fixtures enter the statistics plan (NS/HT/PST excluded).
+  - Plus A2-era tests: explicit completed-ids skip, force-refresh refetch, empty-payload→SKIPPED-for-retry.
 
 ---
 

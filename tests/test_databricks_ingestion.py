@@ -485,6 +485,97 @@ def test_fixture_statistics_force_refresh_refetches_completed_fixture_ids(monkey
     assert called_fixture_ids == [10, 11]
 
 
+def test_fixture_statistics_plan_excludes_uncompleted_fixtures():
+    fixtures = [
+        {"fixture": {"id": 1, "status": {"short": "NS"}}},
+        {"fixture": {"id": 2, "status": {"short": "HT"}}},
+        {"fixture": {"id": 3, "status": {"short": "FT"}}},
+        {"fixture": {"id": 4, "status": {"short": "AET"}}},
+        {"fixture": {"id": 5, "status": {"short": "PEN"}}},
+        {"fixture": {"id": 6, "status": {"short": "PST"}}},
+    ]
+
+    assert ingestion.fixture_ids_for_fixture_statistics(fixtures) == (3, 4, 5)
+
+
+def test_fixture_statistics_completed_checkpoint_rows_skip_api_calls(monkeypatch):
+    """A COMPLETED checkpoint row for the statistics endpoint suppresses refetching."""
+    called_fixture_ids = []
+    checkpoint_queries = []
+
+    def fake_completed_ids(spark, *, endpoint, target_date=None, checkpoint_table=None):
+        checkpoint_queries.append({"endpoint": endpoint, "target_date": target_date})
+        return {10}
+
+    def fake_fetch(endpoint, params, *, api_key=None, logger=None):
+        called_fixture_ids.append(params["fixture"])
+        return _fixture_statistics_payload()
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(ingestion, "completed_checkpoint_fixture_ids", fake_completed_ids)
+    monkeypatch.setattr(ingestion, "_fetch_payload_with_optional_logger", fake_fetch)
+    monkeypatch.setattr(ingestion, "write_fixture_statistics_bronze", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoint", lambda spark, **kwargs: None)
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", lambda *args, **kwargs: None)
+
+    summary = ingestion.ingest_fixture_statistics_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10, 11],
+        target_date="2026-06-25",
+    )
+
+    assert checkpoint_queries == [
+        {"endpoint": ingestion.STATISTICS_ENDPOINT, "target_date": "2026-06-25"}
+    ]
+    assert called_fixture_ids == [11]
+    assert summary.statistics_skipped == 1
+    assert summary.statistics_ingested == 1
+
+
+def test_fixture_statistics_refresh_lands_changed_payload_and_new_hash(monkeypatch):
+    """force_refresh refetches a completed fixture; a changed payload is rewritten
+    to Bronze and the checkpoint hash is updated to the new response_hash."""
+    old_payload = _fixture_statistics_payload(team_id=1)
+    new_payload = _fixture_statistics_payload(team_id=99)
+    writes = []
+    checkpoint_records = []
+
+    monkeypatch.setattr(ingestion, "_supports_spark_sql", lambda spark: True)
+    monkeypatch.setattr(
+        ingestion,
+        "_fetch_payload_with_optional_logger",
+        lambda endpoint, params, *, api_key=None, logger=None: new_payload,
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "write_fixture_statistics_bronze",
+        lambda spark, api_payloads, **kwargs: writes.append((tuple(api_payloads), kwargs)),
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "upsert_endpoint_checkpoint",
+        lambda spark, **kwargs: checkpoint_records.append(kwargs),
+    )
+    monkeypatch.setattr(ingestion, "upsert_endpoint_checkpoints", lambda *args, **kwargs: None)
+
+    summary = ingestion.ingest_fixture_statistics_for_fixtures_to_bronze(
+        spark=object(),
+        fixture_ids=[10],
+        completed_fixture_ids=[10],
+        force_refresh=True,
+    )
+
+    assert writes[0][0] == (new_payload,)
+    completed = [
+        record for record in checkpoint_records
+        if record["status"] == ingestion.CHECKPOINT_COMPLETED
+    ]
+    assert completed[-1]["response_hash"] == ingestion.payload_hash(new_payload)
+    assert completed[-1]["response_hash"] != ingestion.payload_hash(old_payload)
+    assert summary.statistics_ingested == 1
+    assert summary.skipped_fixtures == 0
+
+
 def test_fixture_statistics_empty_payload_is_skipped_for_retry(monkeypatch):
     checkpoint_records = []
 
