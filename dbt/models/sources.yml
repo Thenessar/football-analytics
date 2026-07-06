@@ -27,3 +27,51 @@ sources:
           model_name/model_version/prediction_set_id. Written by
           football_analytics/inference.py with the append + is_active_prediction
           strategy (§15.4 Option C).
+        columns:
+          - name: fixture_id
+            tests:
+              - not_null
+          - name: player_id
+            tests:
+              - not_null
+          - name: target_event
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values:
+                      - offsides
+                      - shots_total
+                      - shots_on
+                      - goals_total
+                      - goals_assists
+                      - goals_saves
+                      - passes_total
+                      - fouls_drawn
+                      - fouls_committed
+                      - cards_yellow
+                      - cards_red
+          - name: position_group
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: ['G', 'D', 'M', 'F']
+          - name: is_starting
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: [true, false]
+                    quote: false
+          - name: is_active_prediction
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: [true, false]
+                    quote: false
+          - name: lineup_source
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: ['confirmed_api', 'projected', 'offline_sample']

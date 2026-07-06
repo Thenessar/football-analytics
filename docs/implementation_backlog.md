@@ -289,13 +289,17 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic H.
 
-### I1. Prediction table tests
+### I1. Prediction table tests — ✅ DONE (2026-07-06)
 - **Files:** `dbt/models/marts/schema.yml` (or wherever prediction table tests are declared).
 - **Acceptance criteria:** implements the tests listed in §16.2 specific to predictions:
   - no duplicate active predictions by fixture/player/target/model/version,
   - complete prediction coverage for confirmed starting XI players,
   - accepted values for `position_group` and boolean flags,
   - sane `predicted_mean` / probability bounds (`predicted_p_ge_*` ∈ [0,1] and non-increasing across ge_1/ge_2/ge_3).
+- **Implementation notes:**
+  - Declared on the **source** (`dbt/models/sources.yml`, `gold_predictions` block): not-null keys, accepted values for `target_event`/`position_group`/`is_starting`/`is_active_prediction`/`lineup_source`.
+  - Singular tests: `assert_pred_player_events_no_duplicate_active_predictions.sql`, `assert_pred_player_events_bounds_sane.sql` (mean ≥ 0, probabilities in [0,1] and non-increasing), `assert_pred_player_events_cover_confirmed_starters.sql` (scoped to fixtures that have an active set, so it passes on an empty table).
+  - `notebooks/00_prepare_run.py` now creates the prediction table up front so the daily medallion `dbt build` can't fail on a missing source before the first inference run.
 
 ### I2. Coverage + monitoring groundwork
 - **Depends on:** I1.
