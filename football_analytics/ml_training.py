@@ -487,9 +487,15 @@ def train_poisson_lightgbm_with_mlflow(
     selected_features = _select_available_features(train_df, feature_columns)
 
     # Databricks enables MLflow autologging by default, which records the eval
-    # metric at every boosting iteration against each logged model. That blows
-    # the free-tier cap of 1000 metrics per logged model (800 rounds x 2
-    # datasets = 1600). Everything needed is logged explicitly below.
+    # metric at every boosting iteration against each logged model and blows
+    # the free-tier cap of 1000 metrics per logged model. The Databricks
+    # autologging layer only honors the GLOBAL disable (flavor-specific
+    # mlflow.lightgbm.autolog(disable=True) gets overridden by it).
+    # Everything needed is logged explicitly below.
+    try:
+        mlflow.autolog(disable=True)
+    except Exception:
+        pass
     try:
         mlflow.lightgbm.autolog(disable=True)
     except Exception:
