@@ -103,6 +103,49 @@ models:
       - name: formation_possession_profile
         description: Team average possession over its last 10 fixtures with the same formation; null when the formation has no history.
 
+  - name: fct_football__player_event_features
+    description: >
+      General player-event feature mart (one row per fixture/team/player)
+      serving training and inference; design and column inventory in
+      docs/design/player_event_features_schema.md. Completed fixtures carry
+      the 11 target-event labels; future fixtures with confirmed lineups carry
+      null labels and expected_minutes/expected_exposure for inference. All
+      predictors are pre-match safe: Elo columns are _pre variants and the
+      *_l5_count/_l5_p90 player history features come from the last 5 played
+      appearances strictly prior to the fixture (ranked join, never the
+      current fixture). Supersedes fct_football__player_shot_features as the
+      canonical training source.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
+    columns:
+      - name: fixture_id
+        tests:
+          - not_null
+      - name: team_id
+        tests:
+          - not_null
+      - name: player_id
+        tests:
+          - not_null
+      - name: is_completed_fixture
+        description: True for completed fixtures (labels populated, training rows); false for inference rows with null labels.
+        tests:
+          - not_null
+      - name: position_group
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['G', 'D', 'M', 'F']
+      - name: exposure
+        description: games_minutes / 90 for training rows; null on inference rows (use expected_exposure there).
+      - name: expected_exposure
+        description: expected_minutes / 90; populated whenever the player has an expected-minutes row.
+
   - name: fct_football__player_expected_minutes
     description: >
       Pre-match expected minutes for players named in a fixture lineup
@@ -577,7 +620,13 @@ models:
           - not_null
 
   - name: fct_football__player_shot_features
-    description: Specialized gold player prop modeling mart with structural-zero count labels, exposure, and strictly lagged rolling form features for Poisson-LightGBM workflows.
+    description: >
+      DEPRECATED — superseded by fct_football__player_event_features (see
+      docs/design/player_event_features_schema.md). Retained only until
+      training code is repointed (Epic F); scheduled for removal in backlog
+      ticket J1. Specialized gold player prop modeling mart with
+      structural-zero count labels, exposure, and strictly lagged rolling form
+      features for Poisson-LightGBM workflows.
     tests:
       - unique_combination_of_columns:
           arguments:

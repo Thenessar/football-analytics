@@ -130,9 +130,15 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Full column inventory covering all four feature families in §11.4: fixture context, team/opponent context, lineup context, player history, team flow context, and target labels for all 11 events in §2.
   - Explicit decision recorded on retaining `fct_football__player_shot_features` standalone vs. folding it in (§11.3 gives both options — pick one and document why).
 
-### D2. Implement `fct_football__player_event_features`
+### D2. Implement `fct_football__player_event_features` — ✅ DONE (2026-07-06)
 - **Files:** new file in `dbt/models/marts/`, updates to `dbt/models/marts/schema.yml`.
 - **Depends on:** D1, C1, existing Elo/lineup/formation marts.
+- **Implementation notes:**
+  - Training rows from `fct_football__player_match_features` (played, labels populated, `is_completed_fixture=true`); inference rows from lineups × team context for non-completed fixtures (null labels). Unused subs in completed fixtures excluded by construction (existing training convention).
+  - Player history via ranked join to last 5 played appearances strictly prior (date, fixture_id tiebreak): `appearances_l5_count`, `minutes_l5`, per-event `*_l5_count` and `*_l5_p90` for all 11 targets.
+  - Joins: team Elo (`_pre` only), player Elo (`_pre`), lineup XI strength, formation history (`_pre`), C1 team flow columns, E1 expected minutes. Coalesce defaults mirror `fct_football__player_shot_features`.
+  - `exposure` (actual, training) vs `expected_exposure` (inference) both present per §13.3.
+  - `fct_football__player_shot_features` marked DEPRECATED in schema.yml; deletion in J1 after Epic F repoints training (per D1 decision).
 - **Acceptance criteria:**
   - Grain: one row per fixture/team/player.
   - Includes all target event labels from §2 for completed fixtures (for training) and null labels for future/scheduled fixtures (for inference).
