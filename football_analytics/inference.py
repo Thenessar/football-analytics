@@ -308,6 +308,25 @@ def ensure_player_event_predictions_table(spark, prediction_table: str) -> None:
     """)
 
 
+# Must mirror ensure_player_event_predictions_table; string columns are left
+# to Spark's inference.
+_PREDICTION_COLUMN_TYPES = {
+    "fixture_id": "int",
+    "team_id": "int",
+    "opponent_team_id": "int",
+    "player_id": "int",
+    "fixture_date_utc": "timestamp",
+    "prediction_created_at_utc": "timestamp",
+    "expected_minutes": "double",
+    "predicted_mean": "double",
+    "predicted_p_ge_1": "double",
+    "predicted_p_ge_2": "double",
+    "predicted_p_ge_3": "double",
+    "is_starting": "boolean",
+    "is_active_prediction": "boolean",
+}
+
+
 def write_player_event_predictions(
     spark,
     records: pd.DataFrame,
@@ -326,12 +345,17 @@ def write_player_event_predictions(
 
     ensure_player_event_predictions_table(spark, prediction_table)
     frame = spark.createDataFrame(records)
+    # Spark infers LONG for Python ints and can widen other types; cast to the
+    # exact DDL types so Delta never has to merge mismatched field types.
+    for column, data_type in _PREDICTION_COLUMN_TYPES.items():
+        if column in frame.columns:
+            frame = frame.withColumn(column, frame[column].cast(data_type))
     set_ids = sorted(records["prediction_set_id"].unique())
     quoted = ", ".join(f"'{set_id}'" for set_id in set_ids)
     spark.sql(
         f"DELETE FROM {prediction_table} WHERE prediction_set_id IN ({quoted})"
     )
-    frame.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(prediction_table)
+    frame.write.format("delta").mode("append").saveAsTable(prediction_table)
 
     deactivated = 0
     keys = records[["fixture_id", "model_name", "model_version", "prediction_set_id"]].drop_duplicates()

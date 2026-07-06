@@ -165,9 +165,23 @@ class _FakeWriter:
         self._log["table"] = table
 
 
+class _FakeColumn:
+    def cast(self, _data_type):
+        return self
+
+
 class _FakeFrame:
-    def __init__(self, log):
+    def __init__(self, log, columns):
         self.write = _FakeWriter(log)
+        self.columns = list(columns)
+        self.casts = log.setdefault("casts", [])
+
+    def __getitem__(self, _name):
+        return _FakeColumn()
+
+    def withColumn(self, name, _column):
+        self.casts.append(name)
+        return self
 
 
 class _FakeSpark:
@@ -178,8 +192,8 @@ class _FakeSpark:
     def sql(self, statement):
         self.sql_statements.append(" ".join(statement.split()))
 
-    def createDataFrame(self, _records):
-        return _FakeFrame(self.write_log)
+    def createDataFrame(self, records):
+        return _FakeFrame(self.write_log, records.columns)
 
 
 def test_prediction_write_appends_and_flips_older_active_sets():
@@ -210,6 +224,10 @@ def test_prediction_write_appends_and_flips_older_active_sets():
     assert summary == {"written": 2, "deactivated_sets": 2}
     assert spark.write_log["mode"] == "append"
     assert spark.write_log["table"] == "catalog.gold.pred_football__player_event_predictions"
+    # Key columns are cast to the DDL types so Delta never merges mismatched
+    # field types (Python ints otherwise arrive as LONG vs the table's INT).
+    assert "fixture_id" in spark.write_log["casts"]
+    assert "is_active_prediction" in spark.write_log["casts"]
 
     create = spark.sql_statements[0]
     assert "CREATE TABLE IF NOT EXISTS" in create
