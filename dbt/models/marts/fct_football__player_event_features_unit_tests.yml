@@ -1,0 +1,43 @@
+version: 2
+
+unit_tests:
+  - name: player_event_features_rolling_windows_exclude_current_fixture
+    description: >
+      Leakage regression (backlog D3): rolling *_l5 features for a fixture
+      must never include that fixture's own stats. Player 7 records 2 shots in
+      fixtures 1-4 and an extreme 50 shots in fixture 5; fixture 5's rolling
+      count must be 8 (2+2+2+2), not 58, and each earlier fixture must only
+      see strictly-prior appearances. Fails loudly if the window definition
+      ever includes current-match data.
+    model: fct_football__player_event_features
+    given:
+      - input: ref('fct_football__player_match_features')
+        rows:
+          - {fixture_id: 1, fixture_date_utc: "2026-06-01 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "M", is_goalkeeper: false, games_minutes: 90, shots_total: 2}
+          - {fixture_id: 2, fixture_date_utc: "2026-06-05 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "M", is_goalkeeper: false, games_minutes: 90, shots_total: 2}
+          - {fixture_id: 3, fixture_date_utc: "2026-06-09 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "M", is_goalkeeper: false, games_minutes: 90, shots_total: 2}
+          - {fixture_id: 4, fixture_date_utc: "2026-06-13 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "M", is_goalkeeper: false, games_minutes: 90, shots_total: 2}
+          - {fixture_id: 5, fixture_date_utc: "2026-06-17 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "M", is_goalkeeper: false, games_minutes: 90, shots_total: 50}
+      - input: ref('stg_football__lineups')
+        rows: []
+      - input: ref('fct_football__team_match_context')
+        rows: []
+      - input: ref('fct_football__team_elo_history')
+        rows: []
+      - input: ref('fct_football__player_elo_history')
+        rows: []
+      - input: ref('fct_football__lineup_elo_strength')
+        rows: []
+      - input: ref('fct_football__formation_matchup_history')
+        rows: []
+      - input: ref('fct_football__team_match_stats_context')
+        rows: []
+      - input: ref('fct_football__player_expected_minutes')
+        rows: []
+    expect:
+      rows:
+        - {fixture_id: 1, player_id: 7, appearances_l5_count: 0, minutes_l5: 0.0, shots_total_l5_count: 0.0, shots_total: 2.0}
+        - {fixture_id: 2, player_id: 7, appearances_l5_count: 1, minutes_l5: 90.0, shots_total_l5_count: 2.0, shots_total: 2.0}
+        - {fixture_id: 3, player_id: 7, appearances_l5_count: 2, minutes_l5: 180.0, shots_total_l5_count: 4.0, shots_total: 2.0}
+        - {fixture_id: 4, player_id: 7, appearances_l5_count: 3, minutes_l5: 270.0, shots_total_l5_count: 6.0, shots_total: 2.0}
+        - {fixture_id: 5, player_id: 7, appearances_l5_count: 4, minutes_l5: 360.0, shots_total_l5_count: 8.0, shots_total_l5_p90: 2.0, shots_total: 50.0}

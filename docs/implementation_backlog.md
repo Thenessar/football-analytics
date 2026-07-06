@@ -146,9 +146,10 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Rolling player history features (last-N rates and counts, minutes history, missed-fixture count) explicitly exclude the current fixture from their own window.
   - If D1 chose to fold in `fct_football__player_shot_features`, that model is deprecated/removed in this ticket or a fast-follow; if retained standalone, this mart supersedes it as the general-purpose source for training.
 
-### D3. Leakage regression tests
+### D3. Leakage regression tests — ✅ DONE (2026-07-06)
 - **Depends on:** D2.
 - **Acceptance criteria:** automated check (dbt test or Python test) that rolling window features for a given fixture never reference stats from that same fixture; test fails loudly if a future column accidentally includes current-match data.
+- **Implementation notes:** dbt unit test `player_event_features_rolling_windows_exclude_current_fixture` (`fct_football__player_event_features_unit_tests.yml`) mocks all nine refs; player 7 has 2 shots in fixtures 1–4 and an extreme 50 in fixture 5 — fixture 5's `shots_total_l5_count` must be 8, and every fixture's window is asserted against the strictly-prior progression (0/2/4/6/8). Runs automatically in `dbt build` before the model materializes.
 
 ---
 
