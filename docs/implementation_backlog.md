@@ -123,8 +123,9 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic C (needs team flow context), plus existing Elo/lineup/formation marts (already implemented).
 
-### D1. Design `fct_football__player_event_features` schema
+### D1. Design `fct_football__player_event_features` schema — ✅ DONE (2026-07-06)
 - **Files:** design doc/PR description referencing `dbt/models/marts/fct_football__player_shot_features.sql`, `fct_football__player_match_features.sql`, `fct_football__lineup_elo_strength.sql`, `fct_football__formation_matchup_history.sql`, `fct_football__player_elo_history.py`.
+- **Implementation notes:** design recorded in `docs/design/player_event_features_schema.md` — full column inventory for all §11.4 families + 11 labels, training/inference row population rules (`is_completed_fixture` flag), ranked-join rolling-history approach, and the explicit decision to **fold in** `fct_football__player_shot_features` (deprecated now, deleted in J1 after Epic F repoints training).
 - **Acceptance criteria:**
   - Full column inventory covering all four feature families in §11.4: fixture context, team/opponent context, lineup context, player history, team flow context, and target labels for all 11 events in §2.
   - Explicit decision recorded on retaining `fct_football__player_shot_features` standalone vs. folding it in (§11.3 gives both options — pick one and document why).
