@@ -568,6 +568,24 @@ def train_poisson_lightgbm_with_mlflow(
                 for metric_name, metric_value in valid_metrics.items():
                     mlflow.log_metric(f"{target}_validation_{metric_name}", metric_value)
 
+                # Chronological-evaluation harness (F4): report validation
+                # metrics per position group so miscalibrated segments are
+                # visible (position-specific models stay deferred, ADR 0003).
+                if "position_group" in target_valid_df.columns:
+                    group_values = target_valid_df["position_group"].fillna("unknown").to_numpy()
+                    for group in sorted(set(group_values)):
+                        group_mask = group_values == group
+                        if not group_mask.any():
+                            continue
+                        group_metrics = evaluate_count_predictions(
+                            y_valid[group_mask], valid_mu[group_mask]
+                        )
+                        for metric_name, metric_value in group_metrics.items():
+                            mlflow.log_metric(
+                                f"{target}_validation_{metric_name}_pos_{group}",
+                                metric_value,
+                            )
+
                 _log_feature_importance_artifacts(
                     booster=booster,
                     feature_columns=selected_features,
@@ -610,6 +628,36 @@ def train_poisson_lightgbm_with_mlflow(
             mlflow.log_artifacts(str(artifact_dir), artifact_path="model_artifacts")
 
     return trained
+
+
+def season_train_validation_split(
+    frame: pd.DataFrame,
+    *,
+    validation_seasons: Sequence[int],
+    season_column: str = "league_season",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Chronological season split: train on seasons N-k..N-1, validate on N.
+
+    Training rows are strictly earlier than the earliest validation season;
+    rows from seasons after the validation set are dropped entirely so future
+    data can never appear on either side.
+    """
+
+    seasons = {int(season) for season in validation_seasons}
+    if not seasons:
+        raise ValueError("validation_seasons must not be empty")
+    if season_column not in frame:
+        raise ValueError(f"Missing season column: {season_column}")
+
+    season_values = pd.to_numeric(frame[season_column], errors="coerce")
+    earliest_validation = min(seasons)
+    train = frame[season_values < earliest_validation].copy()
+    validation = frame[season_values.isin(seasons)].copy()
+    if train.empty:
+        raise ValueError("No training rows earlier than the validation seasons")
+    if validation.empty:
+        raise ValueError("No rows found for the requested validation seasons")
+    return train, validation
 
 
 def temporal_train_validation_split(

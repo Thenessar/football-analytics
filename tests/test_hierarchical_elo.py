@@ -520,6 +520,27 @@ def test_assemble_hierarchical_feature_frame_overwrites_stale_elo_columns():
     assert enriched.iloc[0]["player_offensive_modifier_pre"] == 0.3
 
 
+def test_season_split_trains_on_strictly_earlier_seasons_only():
+    from football_analytics.ml_training import season_train_validation_split
+
+    frame = pd.DataFrame({
+        "fixture_id": [1, 2, 3, 4, 5],
+        "league_season": [2022, 2023, 2024, 2024, 2025],
+    })
+
+    train, validation = season_train_validation_split(frame, validation_seasons=[2024])
+
+    assert train["fixture_id"].tolist() == [1, 2]
+    assert validation["fixture_id"].tolist() == [3, 4]
+    # 2025 rows (after the validation season) appear on neither side
+    assert 5 not in train["fixture_id"].tolist() + validation["fixture_id"].tolist()
+
+    with pytest.raises(ValueError, match="No training rows"):
+        season_train_validation_split(frame, validation_seasons=[2022])
+    with pytest.raises(ValueError, match="No rows found"):
+        season_train_validation_split(frame, validation_seasons=[2030])
+
+
 def test_temporal_train_validation_split_keeps_future_rows_out_of_train():
     frame = pd.DataFrame({
         "fixture_id": [3, 1, 2, 4, 5],

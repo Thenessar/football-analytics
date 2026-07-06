@@ -226,9 +226,12 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Model version and registry URI use the existing Unity Catalog registry configuration (per recent commit "Configure MLflow to explicitly use Unity Catalog registry URI").
   - Run metadata captures feature table name/version used for training, to support the `feature_table_name`/`feature_table_version` columns needed later in Epic H.
 
-### F4. Chronological evaluation harness
+### F4. Chronological evaluation harness — ✅ DONE (2026-07-06)
 - **Depends on:** F1.
 - **Acceptance criteria:** evaluation always splits/reports by time order (e.g., train on seasons N-k..N-1, validate on season N); metrics logged per target and, if F2 adopts them, per position group.
+- **Implementation notes:**
+  - `season_train_validation_split(frame, validation_seasons=[N])`: train = strictly earlier seasons, validate = requested seasons, later seasons dropped from both sides; script flag `--validation-seasons` (overrides `--validation-fraction`, which remains the row-chronological default).
+  - Per-position-group validation metrics logged for every target (`{target}_validation_{metric}_pos_{G|D|M|F}`) even though position-specific models are deferred — these feed the ADR 0003 revisit criterion.
 
 ---
 

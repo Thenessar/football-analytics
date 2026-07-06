@@ -22,6 +22,7 @@ from football_analytics.ml_training import (
     DEFAULT_TARGET_COLUMNS,
     PoissonLightGBMConfig,
     add_model_interaction_features,
+    season_train_validation_split,
     temporal_train_validation_split,
     train_poisson_lightgbm_with_mlflow,
 )
@@ -128,6 +129,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--validation-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--validation-seasons",
+        default=None,
+        help=(
+            "Comma-separated league seasons to validate on (train uses strictly "
+            "earlier seasons). Overrides --validation-fraction."
+        ),
+    )
     parser.add_argument("--learning-rate", type=float, default=0.025)
     parser.add_argument("--num-leaves", type=int, default=31)
     parser.add_argument("--min-child-samples", type=int, default=80)
@@ -154,10 +163,17 @@ def main() -> None:
 
     feature_frame = spark.table(args.feature_table).toPandas()
     training_frame = build_training_feature_frame(feature_frame)
-    train_df, validation_df = temporal_train_validation_split(
-        training_frame,
-        validation_fraction=args.validation_fraction,
-    )
+    validation_seasons = _parse_csv(args.validation_seasons)
+    if validation_seasons:
+        train_df, validation_df = season_train_validation_split(
+            training_frame,
+            validation_seasons=[int(season) for season in validation_seasons],
+        )
+    else:
+        train_df, validation_df = temporal_train_validation_split(
+            training_frame,
+            validation_fraction=args.validation_fraction,
+        )
 
     config = PoissonLightGBMConfig(
         learning_rate=args.learning_rate,
