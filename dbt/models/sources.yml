@@ -14,3 +14,16 @@ sources:
         description: Raw `/fixtures/lineups` response envelopes persisted as JSON strings.
       - name: football_fixture_statistics_raw
         description: Raw `/fixtures/statistics` response envelopes persisted as JSON strings.
+
+  - name: gold_predictions
+    catalog: "{{ var('catalog', env_var('DBT_FOOTBALL_CATALOG', 'football_analytics')) }}"
+    schema: "{{ var('gold_schema', env_var('DBT_FOOTBALL_GOLD_SCHEMA', 'gold')) }}"
+    description: Prediction tables owned by the Python pre-match inference job.
+    tables:
+      - name: pred_football__player_event_predictions
+        description: >
+          Stored pre-match player event predictions (business_logic.md §15).
+          Grain: one row per fixture_id/team_id/player_id/target_event/
+          model_name/model_version/prediction_set_id. Written by
+          football_analytics/inference.py with the append + is_active_prediction
+          strategy (§15.4 Option C).

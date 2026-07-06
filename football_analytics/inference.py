@@ -266,6 +266,48 @@ def load_registered_event_models(
     return models
 
 
+def ensure_player_event_predictions_table(spark, prediction_table: str) -> None:
+    """Creates the §15.2/§15.3 prediction Delta table when missing.
+
+    Grain: one row per fixture_id/team_id/player_id/target_event/model_name/
+    model_version/prediction_set_id.
+    """
+
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {prediction_table} (
+            prediction_set_id STRING,
+            prediction_run_id STRING,
+            fixture_id INT,
+            fixture_date_utc TIMESTAMP,
+            prediction_created_at_utc TIMESTAMP,
+            team_id INT,
+            team_name STRING,
+            opponent_team_id INT,
+            opponent_team_name STRING,
+            home_away STRING,
+            player_id INT,
+            player_name STRING,
+            position_group STRING,
+            is_starting BOOLEAN,
+            formation STRING,
+            target_event STRING,
+            expected_minutes DOUBLE,
+            predicted_mean DOUBLE,
+            predicted_p_ge_1 DOUBLE,
+            predicted_p_ge_2 DOUBLE,
+            predicted_p_ge_3 DOUBLE,
+            model_name STRING,
+            model_version STRING,
+            model_stage_or_alias STRING,
+            feature_table_name STRING,
+            feature_table_version STRING,
+            lineup_source STRING,
+            is_active_prediction BOOLEAN
+        )
+        USING DELTA
+    """)
+
+
 def write_player_event_predictions(
     spark,
     records: pd.DataFrame,
@@ -282,14 +324,13 @@ def write_player_event_predictions(
     if records.empty:
         return {"written": 0, "deactivated_sets": 0}
 
+    ensure_player_event_predictions_table(spark, prediction_table)
     frame = spark.createDataFrame(records)
-    table_exists = bool(spark.catalog.tableExists(prediction_table))
     set_ids = sorted(records["prediction_set_id"].unique())
-    if table_exists:
-        quoted = ", ".join(f"'{set_id}'" for set_id in set_ids)
-        spark.sql(
-            f"DELETE FROM {prediction_table} WHERE prediction_set_id IN ({quoted})"
-        )
+    quoted = ", ".join(f"'{set_id}'" for set_id in set_ids)
+    spark.sql(
+        f"DELETE FROM {prediction_table} WHERE prediction_set_id IN ({quoted})"
+    )
     frame.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(prediction_table)
 
     deactivated = 0

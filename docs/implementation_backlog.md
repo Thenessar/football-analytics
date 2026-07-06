@@ -264,21 +264,24 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic G (needs an inference job to write into it); schema can be drafted in parallel with Epic F/G.
 
-### H1. Create `gold.pred_football__player_event_predictions`
+### H1. Create `gold.pred_football__player_event_predictions` — ✅ DONE (2026-07-06)
 - **Files:** new dbt model or Python-managed Delta table under `dbt/models/marts/`.
 - **Acceptance criteria:**
   - Grain matches §15.2: `fixture_id, team_id, player_id, target_event, model_name, model_version, prediction_set_id`.
   - Full column set from §15.3 present (`prediction_set_id`, `prediction_run_id`, fixture/team/opponent/player identity, `position_group`, `is_starting`, `formation`, `target_event`, `expected_minutes`, `predicted_mean`, `predicted_p_ge_1/2/3`, model metadata, `feature_table_name`, `feature_table_version`, `lineup_source`, `is_active_prediction`).
+- **Implementation notes:** Python-managed Delta table (the inference job owns writes, so dbt-model materialization would fight it). Explicit DDL with the full §15.3 column set lives in `ensure_player_event_predictions_table` (`football_analytics/inference.py`), invoked by the writer. Registered as dbt **source** `gold_predictions.pred_football__player_event_predictions` so I1 can attach dbt tests.
 
-### H2. Dedup/write strategy: append + active flag
+### H2. Dedup/write strategy: append + active flag — ✅ DONE (2026-07-06)
 - **Depends on:** H1.
 - **Acceptance criteria:**
   - Implements the recommended default (§15.4 Option C): append every run for audit history, deterministic `prediction_set_id` per fixture inference run, older rows for the same fixture/model/version flipped to `is_active_prediction=false` when a new active set lands.
   - No duplicate active rows for the same `(fixture_id, team_id, player_id, target_event, model_name, model_version)`.
+- **Implementation notes:** `write_player_event_predictions`: (1) rows with the same `prediction_set_id` are deleted before append, so identical reruns replace themselves instead of duplicating; (2) after append, older sets for the same fixture/model/version are flipped inactive. `deterministic_prediction_set_id` = sha256 of fixture + lineup digest + model versions, so a new lineup or model version creates a new set and the old one is deactivated. Unit-tested with a fake Spark (`test_prediction_write_appends_and_flips_older_active_sets`).
 
-### H3. Wire G1 inference job to write into H1
+### H3. Wire G1 inference job to write into H1 — ✅ DONE (2026-07-06)
 - **Depends on:** G1, H2.
 - **Acceptance criteria:** end-to-end run for a real upcoming fixture produces exactly one active prediction row per confirmed player/target, visible via `scripts/run_query.py` or notebook display.
+- **Implementation notes:** `notebooks/04_prematch_inference_predict.py` writes through `write_player_event_predictions` into `table_name(config, "gold", PREDICTION_TABLE_NAME)` and displays per-fixture results (step 10). The one-active-row property is enforced by construction (H2) and by the I1 no-duplicate-active-predictions test. ⚠️ The live end-to-end run against a real upcoming fixture was **not** executed from this workstation (needs Databricks + a fixture inside the trigger window) — verify on the first unpaused `prematch_inference_pipeline` run with `scripts/run_query.py "SELECT * FROM gold.pred_football__player_event_predictions WHERE is_active_prediction"`.
 
 ---
 

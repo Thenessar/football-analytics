@@ -147,6 +147,101 @@ def test_prediction_records_shape_probabilities_and_goalkeeper_gating():
     assert (records["feature_table_version"] == "42").all()
 
 
+class _FakeWriter:
+    def __init__(self, log):
+        self._log = log
+
+    def format(self, _fmt):
+        return self
+
+    def mode(self, mode):
+        self._log["mode"] = mode
+        return self
+
+    def option(self, _key, _value):
+        return self
+
+    def saveAsTable(self, table):
+        self._log["table"] = table
+
+
+class _FakeFrame:
+    def __init__(self, log):
+        self.write = _FakeWriter(log)
+
+
+class _FakeSpark:
+    def __init__(self):
+        self.sql_statements = []
+        self.write_log = {}
+
+    def sql(self, statement):
+        self.sql_statements.append(" ".join(statement.split()))
+
+    def createDataFrame(self, _records):
+        return _FakeFrame(self.write_log)
+
+
+def test_prediction_write_appends_and_flips_older_active_sets():
+    from football_analytics.inference import write_player_event_predictions
+
+    records = pd.DataFrame([
+        {
+            "prediction_set_id": "set-1",
+            "fixture_id": 100,
+            "model_name": "catalog.gold.player_event__shots_total",
+            "model_version": "3",
+            "is_active_prediction": True,
+        },
+        {
+            "prediction_set_id": "set-1",
+            "fixture_id": 100,
+            "model_name": "catalog.gold.player_event__goals_saves",
+            "model_version": "2",
+            "is_active_prediction": True,
+        },
+    ])
+    spark = _FakeSpark()
+
+    summary = write_player_event_predictions(
+        spark, records, prediction_table="catalog.gold.pred_football__player_event_predictions"
+    )
+
+    assert summary == {"written": 2, "deactivated_sets": 2}
+    assert spark.write_log["mode"] == "append"
+    assert spark.write_log["table"] == "catalog.gold.pred_football__player_event_predictions"
+
+    create = spark.sql_statements[0]
+    assert "CREATE TABLE IF NOT EXISTS" in create
+    for column in ("prediction_set_id", "target_event", "predicted_p_ge_3", "is_active_prediction", "lineup_source"):
+        assert column in create
+
+    delete = spark.sql_statements[1]
+    assert delete.startswith("DELETE FROM")
+    assert "prediction_set_id IN ('set-1')" in delete
+
+    updates = [s for s in spark.sql_statements if s.startswith("UPDATE")]
+    assert len(updates) == 2
+    for update in updates:
+        assert "SET is_active_prediction = false" in update
+        assert "prediction_set_id != 'set-1'" in update
+        assert "fixture_id = 100" in update
+    assert any("model_version = '3'" in update for update in updates)
+    assert any("model_version = '2'" in update for update in updates)
+
+
+def test_prediction_write_with_no_records_is_a_noop():
+    from football_analytics.inference import write_player_event_predictions
+
+    spark = _FakeSpark()
+    summary = write_player_event_predictions(
+        spark, pd.DataFrame(), prediction_table="catalog.gold.predictions"
+    )
+
+    assert summary == {"written": 0, "deactivated_sets": 0}
+    assert spark.sql_statements == []
+
+
 def test_prediction_records_reject_mixed_fixtures():
     rows = _fixture_rows()
     rows.loc[rows.index[-1], "fixture_id"] = 200
