@@ -400,6 +400,29 @@ def test_default_targets_cover_all_eleven_events_and_exclude_leaky_features():
     assert "games_minutes" not in DEFAULT_LIGHTGBM_FEATURES
 
 
+def test_goals_saves_training_rows_are_restricted_to_goalkeepers():
+    from football_analytics.ml_training import filter_rows_for_target
+
+    frame = pd.DataFrame([
+        {"player_id": 1, "is_goalkeeper": True, "position_group": "G", "goals_saves": 4},
+        {"player_id": 2, "is_goalkeeper": False, "position_group": "F", "goals_saves": 0},
+        {"player_id": 3, "is_goalkeeper": None, "position_group": "D", "goals_saves": 0},
+    ])
+
+    saves_rows = filter_rows_for_target(frame, "goals_saves")
+    assert saves_rows["player_id"].tolist() == [1]
+
+    # position_group fallback when is_goalkeeper is absent
+    fallback_rows = filter_rows_for_target(
+        frame.drop(columns=["is_goalkeeper"]), "goals_saves"
+    )
+    assert fallback_rows["player_id"].tolist() == [1]
+
+    # non-gated targets keep every row
+    all_rows = filter_rows_for_target(frame, "shots_total")
+    assert all_rows["player_id"].tolist() == [1, 2, 3]
+
+
 def test_build_training_feature_frame_keeps_only_completed_rows_with_minutes():
     frame = pd.DataFrame([
         {"fixture_id": 1, "is_completed_fixture": True, "games_minutes": 90.0},

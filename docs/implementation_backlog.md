@@ -203,8 +203,12 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Exposure offset uses `expected_minutes` (inference-time) or actual `games_minutes` (training-time), per §13.3.
   - Train/validation split is chronological, not random (§13.4, §19).
 
-### F2. Per-target model family adjustments for sparse/special targets
+### F2. Per-target model family adjustments for sparse/special targets — ✅ DONE (2026-07-06)
 - **Depends on:** F1.
+- **Implementation notes:**
+  - `goals_saves`: training rows filtered to goalkeepers via `filter_rows_for_target` (uses `is_goalkeeper`, `position_group='G'` fallback); model wrapper carries `goalkeeper_only=True` so the inference job emits structural zeros for non-GKs instead of scoring them. Per-target train/validation row counts logged; targets with empty frames after gating are skipped with a logged reason.
+  - Sparse targets (`cards_*`, `goals_total`, `goals_assists`): Poisson baseline accepted for v1; calibration follow-up criteria recorded in `docs/adr/0003-sparse-target-handling.md`.
+  - Position-group-specific models: **deferred for v1** (same ADR) — revisit when F4's per-group metrics show systematic miscalibration.
 - **Acceptance criteria:**
   - `goals_saves`: restricted to goalkeeper position group; non-goalkeepers produce structural zero rather than being modeled (§2, §13.3).
   - `cards_yellow`, `cards_red`, `goals_total`, `goals_assists`: documented calibration/handling approach for sparsity (e.g., classification + calibration, or accept Poisson baseline for v1 with a follow-up ticket) — per §2 notes and §13.3 "potential improvements."

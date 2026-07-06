@@ -236,6 +236,7 @@ class ExposurePoissonLightGBMModel:
     feature_columns: list[str]
     target_column: str
     exposure_column: str = "games_minutes"
+    goalkeeper_only: bool = False
 
     def predict_mean(self, frame: pd.DataFrame, exposure: Optional[Iterable[float]] = None) -> np.ndarray:
         X = frame[self.feature_columns]
@@ -310,6 +311,24 @@ def count_threshold_probabilities(
             cumulative += math.exp(-mu) * (mu ** i) / math.factorial(i)
         probabilities[f"p_ge_{threshold}"] = float(np.clip(1.0 - cumulative, 0.0, 1.0))
     return probabilities
+
+
+def filter_rows_for_target(frame: pd.DataFrame, target_column: str) -> pd.DataFrame:
+    """Restricts rows for position-gated targets (business_logic.md §13.3).
+
+    goals_saves models train on goalkeepers only; non-goalkeepers are a
+    structural zero handled outside the model at inference time (see
+    docs/adr/0003-sparse-target-handling.md).
+    """
+
+    if target_column not in GOALKEEPER_ONLY_TARGETS:
+        return frame
+    if "is_goalkeeper" in frame.columns:
+        mask = frame["is_goalkeeper"].fillna(False).astype(bool)
+        return frame[mask]
+    if "position_group" in frame.columns:
+        return frame[frame["position_group"] == "G"]
+    return frame
 
 
 def _select_available_features(
@@ -472,14 +491,25 @@ def train_poisson_lightgbm_with_mlflow(
             artifact_dir = Path(tmpdir)
 
             for target in target_columns:
+                target_train_df = filter_rows_for_target(train_df, target)
+                target_valid_df = filter_rows_for_target(validation_df, target)
+                if target_train_df.empty or target_valid_df.empty:
+                    mlflow.log_param(
+                        f"{target}_skipped",
+                        "no rows after position-group filtering",
+                    )
+                    continue
+                mlflow.log_param(f"{target}_train_rows", len(target_train_df))
+                mlflow.log_param(f"{target}_validation_rows", len(target_valid_df))
+
                 X_train, y_train, train_exposure = _prepare_xy(
-                    train_df,
+                    target_train_df,
                     target_column=target,
                     feature_columns=selected_features,
                     exposure_column=exposure_column,
                 )
                 X_valid, y_valid, valid_exposure = _prepare_xy(
-                    validation_df,
+                    target_valid_df,
                     target_column=target,
                     feature_columns=selected_features,
                     exposure_column=exposure_column,
@@ -512,6 +542,7 @@ def train_poisson_lightgbm_with_mlflow(
                     feature_columns=selected_features,
                     target_column=target,
                     exposure_column=exposure_column,
+                    goalkeeper_only=target in GOALKEEPER_ONLY_TARGETS,
                 )
 
                 train_mu = np.exp(
@@ -536,7 +567,7 @@ def train_poisson_lightgbm_with_mlflow(
                 )
                 _log_shap_artifacts(
                     model=model,
-                    training_frame=train_df,
+                    training_frame=target_train_df,
                     target_column=target,
                     artifact_dir=artifact_dir,
                 )
