@@ -34,6 +34,43 @@ models:
       - name: opponent_formation
         description: The formation used by the opponent in the fixture.
 
+  - name: fct_football__team_match_stats_context
+    description: >
+      Gold team match-flow context with one row per fixture/team. Joins silver
+      team match statistics onto the team-perspective fixture context
+      (opponent, home/away, competition) and adds leakage-safe rolling features
+      over the five fixtures strictly prior to the current one. Current-match
+      stat columns are outcomes (null for future fixtures) and must not be used
+      as predictors; the rolling *_l5 features and expected_possession_share
+      are pre-match safe. expected_possession_share is engineered as the team's
+      rolling possession share against the opponent's rolling possession, with
+      a 0.5 fallback when either side lacks history. Fouls drawn by a team
+      equal the fouls its opponent commits, so opponent_fouls_drawn_allowed_l5
+      is the opponent's own committed-fouls rolling average.
+    columns:
+      - name: fixture_id
+        description: API-Football fixture identifier.
+      - name: team_id
+        description: Team identifier for the row perspective.
+      - name: team_possession_l5_avg
+        description: Team average possession over the previous 5 fixtures (excluding the current one).
+      - name: opponent_possession_l5_avg
+        description: Opponent average possession over its previous 5 fixtures (excluding the current one).
+      - name: expected_possession_share
+        description: Pre-match possession share estimate in [0, 1]; 0.5 when history is insufficient.
+      - name: team_passes_l5_per_match
+        description: Team average passes per match over the previous 5 fixtures.
+      - name: opponent_passes_allowed_l5
+        description: Passes the opponent allowed per match over its previous 5 fixtures.
+      - name: team_shots_l5
+        description: Team average shots per match over the previous 5 fixtures.
+      - name: opponent_shots_allowed_l5
+        description: Shots the opponent allowed per match over its previous 5 fixtures.
+      - name: team_fouls_l5
+        description: Team average fouls committed per match over the previous 5 fixtures.
+      - name: opponent_fouls_drawn_allowed_l5
+        description: Fouls the opponent commits per match over its previous 5 fixtures (fouls available to be drawn against it).
+
   - name: fct_football__player_match_features
     description: Canonical gold player-fixture feature mart for data science. One row represents one player for one team in one fixture, with player statistics, match context, lineup context, engineered per-90 metrics, rate metrics, and modeling flags.
     tests:

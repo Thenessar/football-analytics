@@ -88,8 +88,14 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic B.
 
-### C1. `fct_football__team_match_stats_context`
+### C1. `fct_football__team_match_stats_context` — ✅ DONE (2026-07-06)
 - **Files:** new file in `dbt/models/marts/`, register in `dbt/models/marts/schema.yml`.
+- **Implementation notes:**
+  - Base is `fct_football__team_match_context` (so future/scheduled fixtures get rows with null current-match stats — needed for inference); silver stats left-joined twice (own + opponent-as-allowed).
+  - All §11.5 rolling features implemented with the repo-standard leakage-safe window `rows between 5 preceding and 1 preceding` partitioned by team, ordered by `fixture_date_utc, fixture_id`; opponent rolling features come from a self-join on `(fixture_id, opponent_team_id)`.
+  - `expected_possession_share` = team possession L5 / (team L5 + opponent L5), fallback 0.5 with insufficient history (this anticipates C2 option (b); C2 still owes the written decision + `elo_possession_interaction`).
+  - `opponent_fouls_drawn_allowed_l5` is defined as the opponent's own committed-fouls L5 average (fouls drawn by a team = fouls committed by its opponent; team-level fouls-drawn isn't in the provider payload). Documented in schema.yml.
+  - `team_passes_l5_p90_or_per_match` resolved as per-match: `team_passes_l5_per_match` (team-level per-90 is meaningless since teams always play ~90+).
 - **Acceptance criteria:**
   - Grain: one row per fixture/team.
   - Joins `stg_football__team_match_stats` with `fct_football__team_match_context` (opponent, home/away, competition) to produce a fixture/team-perspective mart.
