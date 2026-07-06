@@ -111,11 +111,49 @@ models:
       computable at inference time before kickoff. Estimator choice and the
       candidates deferred as future work are recorded in
       docs/adr/0002-expected-minutes-estimator.md.
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fixture_id
+              - team_id
+              - player_id
     columns:
+      - name: fixture_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_football__fixtures')
+                field: fixture_id
+      - name: team_id
+        tests:
+          - not_null
+      - name: player_id
+        tests:
+          - not_null
+      - name: is_starting
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: position_group
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['G', 'D', 'M', 'F']
       - name: expected_minutes
         description: Expected minutes for the fixture, clamped to [0, 120].
+        tests:
+          - not_null
       - name: expected_minutes_method
         description: "Which estimator produced the value: l5_trimmed_mean (>=3 prior appearances), l5_plain_average (1-2), or role_prior (none: starter 85 / substitute 15)."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['l5_trimmed_mean', 'l5_plain_average', 'role_prior']
       - name: prior_appearance_count
         description: Number of prior played appearances (max 5) available to the estimator.
 
