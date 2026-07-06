@@ -189,8 +189,14 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
 
 **Depends on:** Epic D (feature mart with all target labels), Epic E (expected minutes as exposure offset).
 
-### F1. Expand target column list in training code
+### F1. Expand target column list in training code — ✅ DONE (2026-07-06)
 - **Files:** `football_analytics/ml_training.py`, `scripts/train_poisson_lgbm.py`.
+- **Implementation notes:**
+  - `DEFAULT_TARGET_COLUMNS` = all 11 §2 events; one independent Poisson LightGBM per target (existing loop).
+  - Script default `--feature-table` repointed to `fct_football__player_event_features`; `build_training_feature_frame` now filters to `is_completed_fixture` rows with positive `games_minutes` (the mart also carries inference rows).
+  - Exposure: training keeps `games_minutes` offset; inference passes `expected_minutes` via `ExposurePoissonLightGBMModel.predict_mean(exposure=...)`. **`games_minutes` removed from `DEFAULT_LIGHTGBM_FEATURES`** (post-match info, §13.4) — minutes enter only through the offset. Feature list expanded with the mart's per-event `*_l5_p90`, `appearances_l5_count`, `minutes_l5`, and all team-flow columns; `_select_available_features` keeps backward compat with older tables.
+  - Chronological split already existed (`temporal_train_validation_split`); F4 adds the season-based harness.
+  - `_prepare_xy` now coerces features numerically (nullable Spark booleans like `is_starting` arrive as object dtype).
 - **Acceptance criteria:**
   - Default target list expanded from `shots_total, fouls_committed, dribbles_attempts` to all 11 events in §2: `offsides, shots_total, shots_on, goals_total, goals_assists, goals_saves, passes_total, fouls_drawn, fouls_committed, cards_yellow, cards_red`.
   - Each target trains independently (one Poisson LightGBM model per target, per §13.3 baseline) against `fct_football__player_event_features`.

@@ -379,6 +379,39 @@ def test_model_interaction_features_are_derived_from_persisted_elo_columns():
     assert enriched.iloc[0]["lineup_defense_vs_opp_attack"] == pytest.approx(-0.05)
 
 
+def test_default_targets_cover_all_eleven_events_and_exclude_leaky_features():
+    from football_analytics.ml_training import DEFAULT_TARGET_COLUMNS
+
+    assert DEFAULT_TARGET_COLUMNS == [
+        "offsides",
+        "shots_total",
+        "shots_on",
+        "goals_total",
+        "goals_assists",
+        "goals_saves",
+        "passes_total",
+        "fouls_drawn",
+        "fouls_committed",
+        "cards_yellow",
+        "cards_red",
+    ]
+    # games_minutes is post-match information; minutes enter via the exposure
+    # offset, never as a feature.
+    assert "games_minutes" not in DEFAULT_LIGHTGBM_FEATURES
+
+
+def test_build_training_feature_frame_keeps_only_completed_rows_with_minutes():
+    frame = pd.DataFrame([
+        {"fixture_id": 1, "is_completed_fixture": True, "games_minutes": 90.0},
+        {"fixture_id": 2, "is_completed_fixture": False, "games_minutes": None},
+        {"fixture_id": 3, "is_completed_fixture": True, "games_minutes": 0.0},
+    ])
+
+    training = build_training_feature_frame(frame, require_elo=False)
+
+    assert training["fixture_id"].tolist() == [1]
+
+
 def test_default_lightgbm_features_include_persisted_and_derived_elo_features():
     expected = {
         "player_offensive_rating_pre",

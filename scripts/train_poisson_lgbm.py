@@ -1,9 +1,14 @@
-"""Train Poisson LightGBM models from the gold player prop feature table.
+"""Train Poisson LightGBM models from the gold player event feature table.
+
+One exposure-offset Poisson LightGBM model is trained per target event
+(business_logic.md §2/§13.3) against fct_football__player_event_features.
+Training rows use actual games_minutes as the exposure offset; inference uses
+expected_minutes via ExposurePoissonLightGBMModel.predict_mean(exposure=...).
 
 Example:
     python scripts/train_poisson_lgbm.py \
-        --feature-table football_analytics.gold.fct_football__player_shot_features \
-        --registered-model-prefix football_analytics.gold.player_prop_poisson_lgbm
+        --feature-table football_analytics.gold.fct_football__player_event_features \
+        --registered-model-prefix football_analytics.gold.player_event
 """
 
 from __future__ import annotations
@@ -54,28 +59,39 @@ def build_training_feature_frame(
     *,
     require_elo: bool = True,
 ) -> pd.DataFrame:
-    """Validates the dbt-materialized feature table used for model training."""
+    """Validates the dbt-materialized feature table used for model training.
+
+    fct_football__player_event_features also carries inference rows for
+    future fixtures (null labels, is_completed_fixture = false); training must
+    only see completed rows with real exposure minutes.
+    """
+
+    frame = feature_frame
+    if "is_completed_fixture" in frame.columns:
+        frame = frame[frame["is_completed_fixture"].fillna(False).astype(bool)]
+    if "games_minutes" in frame.columns:
+        frame = frame[pd.to_numeric(frame["games_minutes"], errors="coerce").fillna(0) > 0]
 
     if not require_elo:
-        return feature_frame.copy()
+        return frame.copy()
 
     missing = [
         column for column in REQUIRED_ELO_FEATURE_COLUMNS
-        if column not in feature_frame.columns
+        if column not in frame.columns
     ]
     if missing:
         raise ValueError(
             "Feature table is missing dbt-materialized ELO columns: "
             + ", ".join(missing)
         )
-    return add_model_interaction_features(feature_frame)
+    return add_model_interaction_features(frame)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--feature-table",
-        default="football_analytics.gold.fct_football__player_shot_features",
+        default="football_analytics.gold.fct_football__player_event_features",
         help="Fully-qualified Spark/Unity Catalog table containing training rows.",
     )
     parser.add_argument(

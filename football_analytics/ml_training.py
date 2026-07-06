@@ -21,17 +21,60 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_TARGET_COLUMNS = ["shots_total", "fouls_committed", "dribbles_attempts"]
+# All 11 target events from business_logic.md §2, trained independently
+# against fct_football__player_event_features.
+DEFAULT_TARGET_COLUMNS = [
+    "offsides",
+    "shots_total",
+    "shots_on",
+    "goals_total",
+    "goals_assists",
+    "goals_saves",
+    "passes_total",
+    "fouls_drawn",
+    "fouls_committed",
+    "cards_yellow",
+    "cards_red",
+]
 
+# Targets that are structural zeros outside a position group (§13.3):
+# goalkeepers are the only players who can record saves.
+GOALKEEPER_ONLY_TARGETS = frozenset({"goals_saves"})
+
+# games_minutes is intentionally NOT a feature: it is post-match information
+# (§13.4). Minutes enter the model through the exposure offset instead —
+# actual games_minutes at training time, expected_minutes at inference time.
 DEFAULT_LIGHTGBM_FEATURES = [
-    "games_minutes",
     "is_starter",
+    "is_starting",
     "was_substitute",
+    "appearances_l5_count",
+    "minutes_l5",
+    "offsides_l5_p90",
     "shots_total_l5_p90",
     "shots_on_l5_p90",
-    "dribbles_attempts_l5_p90",
+    "goals_total_l5_p90",
+    "goals_assists_l5_p90",
+    "goals_saves_l5_p90",
+    "passes_total_l5_p90",
+    "fouls_drawn_l5_p90",
     "fouls_committed_l5_p90",
+    "cards_yellow_l5_p90",
+    "cards_red_l5_p90",
+    "dribbles_attempts_l5_p90",
     "tackles_interceptions_l5_p90",
+    "team_possession_l5_avg",
+    "opponent_possession_l5_avg",
+    "expected_possession_share",
+    "team_passes_l5_per_match",
+    "opponent_passes_allowed_l5",
+    "team_shots_l5",
+    "opponent_shots_allowed_l5",
+    "team_fouls_l5",
+    "opponent_fouls_drawn_allowed_l5",
+    "elo_expected_score",
+    "elo_possession_interaction",
+    "formation_possession_profile",
     "team_elo_general_pre",
     "opponent_elo_general_pre",
     "team_elo_attack_pre",
@@ -296,7 +339,9 @@ def _prepare_xy(
     subset = frame[required_columns].copy()
     subset = subset.loc[:, ~subset.columns.duplicated()].copy()
     subset = subset.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    X = subset[selected_features]
+    # Nullable booleans (e.g. is_starting from Spark) arrive as object dtype;
+    # LightGBM needs numeric inputs.
+    X = subset[selected_features].apply(pd.to_numeric, errors="coerce").fillna(0.0)
     y = subset[target_column].clip(lower=0.0).to_numpy(dtype=float)
     exposure = exposure_from_minutes(subset[exposure_column])
     return X, y, exposure
