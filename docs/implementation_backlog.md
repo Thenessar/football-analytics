@@ -301,9 +301,14 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - Singular tests: `assert_pred_player_events_no_duplicate_active_predictions.sql`, `assert_pred_player_events_bounds_sane.sql` (mean ≥ 0, probabilities in [0,1] and non-increasing), `assert_pred_player_events_cover_confirmed_starters.sql` (scoped to fixtures that have an active set, so it passes on an empty table).
   - `notebooks/00_prepare_run.py` now creates the prediction table up front so the daily medallion `dbt build` can't fail on a missing source before the first inference run.
 
-### I2. Coverage + monitoring groundwork
+### I2. Coverage + monitoring groundwork — ✅ DONE (2026-07-06)
 - **Depends on:** I1.
 - **Acceptance criteria:** at minimum, a queryable check (view or scheduled query) surfacing the §16.3 monitoring list — model metrics by target/position group, calibration for sparse events, prediction drift by competition, actual-vs-predicted after match completion, lineup coverage, missing expected-minutes count, active model version. Full dashboarding can be a follow-up; this ticket just needs the underlying queries/views to exist.
+- **Implementation notes:** three dbt views in `dbt/models/marts/`:
+  - `mon_football__prediction_vs_actual` — active predictions joined to unpivoted realized labels (actual-vs-predicted after completion).
+  - `mon_football__prediction_monitoring` — per target/position-group/league/model-version segment: counts, MAE, bias, predicted-vs-empirical P(≥1)/P(≥2) calibration (sparse events), date range (drift by competition falls out of the league grouping; model_version column = active model version).
+  - `mon_football__prediction_coverage` — per fixture: confirmed starters, starter prediction coverage rate, starters missing expected minutes, lineup source.
+  - All are views over the prediction source + event feature mart, so they stay empty-but-queryable until predictions land. Dashboarding remains a follow-up.
 
 ---
 

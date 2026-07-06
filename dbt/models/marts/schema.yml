@@ -103,6 +103,27 @@ models:
       - name: formation_possession_profile
         description: Team average possession over its last 10 fixtures with the same formation; null when the formation has no history.
 
+  - name: mon_football__prediction_vs_actual
+    description: >
+      Row-level actual-vs-predicted view joining active player event
+      predictions to the realized labels of completed fixtures. Groundwork for
+      the §16.3 monitoring list; feeds mon_football__prediction_monitoring.
+
+  - name: mon_football__prediction_monitoring
+    description: >
+      Aggregated monitoring view (one row per target_event / position_group /
+      league / model version segment): prediction counts, MAE, bias,
+      predicted-vs-empirical P(>=1) and P(>=2) calibration for sparse events,
+      and the segment's date range. Dashboarding on top is a follow-up; this
+      view is the queryable check required by backlog I2.
+
+  - name: mon_football__prediction_coverage
+    description: >
+      Per-fixture operational coverage: confirmed starters, starters with an
+      active prediction, starter prediction coverage rate, count of starters
+      missing expected minutes, and the active set's lineup source. Fixtures
+      without predictions surface with zero coverage.
+
   - name: fct_football__player_event_features
     description: >
       General player-event feature mart (one row per fixture/team/player)
