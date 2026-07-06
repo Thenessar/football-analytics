@@ -456,12 +456,19 @@ def train_poisson_lightgbm_with_mlflow(
     experiment_name: Optional[str] = None,
     run_name: str = "hierarchical-elo-poisson-lightgbm",
     registered_model_name_prefix: Optional[str] = None,
+    run_tags: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Trains one exposure-offset Poisson LightGBM model per target.
 
     The LightGBM Dataset `init_score` is set to log(exposure), causing the
     booster to learn a per-90 log intensity while metrics are evaluated on
     exposure-scaled match counts.
+
+    Registered model names map 1:1 to the target event as
+    `<registered_model_name_prefix>__<target>` (e.g. a prefix of
+    `catalog.schema.player_event` registers `player_event__shots_total`).
+    `run_tags` should carry feature-table lineage (`feature_table_name`,
+    `feature_table_version`) so prediction rows can reference them (Epic H).
     """
 
     try:
@@ -486,6 +493,8 @@ def train_poisson_lightgbm_with_mlflow(
         mlflow.log_params(cfg.to_mlflow_params(selected_features))
         mlflow.log_param("target_columns", json.dumps(list(target_columns)))
         mlflow.log_param("exposure_column", exposure_column)
+        if run_tags:
+            mlflow.set_tags({key: str(value) for key, value in dict(run_tags).items()})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir)
@@ -577,6 +586,8 @@ def train_poisson_lightgbm_with_mlflow(
                     pickle.dump(model, handle)
 
                 if registered_model_name_prefix:
+                    registered_model_name = f"{registered_model_name_prefix}__{target}"
+                    mlflow.log_param(f"{target}_registered_model_name", registered_model_name)
                     input_example = X_train.head(min(5, len(X_train))).copy()
                     model_output_example = booster.predict(input_example)
                     signature = infer_signature(input_example, model_output_example)
@@ -585,7 +596,7 @@ def train_poisson_lightgbm_with_mlflow(
                         **_lightgbm_log_model_kwargs(
                             mlflow.lightgbm.log_model,
                             model_name=f"{target}_lightgbm_booster",
-                            registered_model_name=f"{registered_model_name_prefix}_{target}",
+                            registered_model_name=registered_model_name,
                             input_example=input_example,
                             signature=signature,
                         ),

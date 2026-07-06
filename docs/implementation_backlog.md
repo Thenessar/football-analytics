@@ -214,9 +214,13 @@ Closes the gap called out in business_logic.md §6/§9.3: team-level match stats
   - `cards_yellow`, `cards_red`, `goals_total`, `goals_assists`: documented calibration/handling approach for sparsity (e.g., classification + calibration, or accept Poisson baseline for v1 with a follow-up ticket) — per §2 notes and §13.3 "potential improvements."
   - Decision recorded on whether position-group-specific models are used for v1 or deferred.
 
-### F3. MLflow tracking and registration conventions
+### F3. MLflow tracking and registration conventions — ✅ DONE (2026-07-06)
 - **Files:** `football_analytics/ml_training.py`, `scripts/train_poisson_lgbm.py`.
 - **Depends on:** F1.
+- **Implementation notes:**
+  - Registered model names now map 1:1 to targets: `<prefix>__<target>` (e.g. prefix `football_analytics.gold.player_event` → `player_event__shots_total`); per-target `{target}_registered_model_name` logged as a run param.
+  - Script sets `mlflow.set_registry_uri("databricks-uc")` when registering (matches the existing UC registry configuration).
+  - `run_tags` parameter added to the trainer; the script tags every run with `feature_table_name` + `feature_table_version` (current Delta version via `DESCRIBE HISTORY`) for Epic H lineage columns.
 - **Acceptance criteria:**
   - Every trained model is logged to MLflow with a naming convention that maps 1:1 to `target_event` (e.g., `player_event__<target>`).
   - Model version and registry URI use the existing Unity Catalog registry configuration (per recent commit "Configure MLflow to explicitly use Unity Catalog registry URI").

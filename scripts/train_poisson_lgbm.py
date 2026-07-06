@@ -54,6 +54,18 @@ def _parse_csv(value: str | None) -> list[str] | None:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _feature_table_version(spark, table_name: str) -> str | None:
+    """Returns the current Delta version of the feature table, if readable."""
+
+    try:
+        history = spark.sql(f"DESCRIBE HISTORY {table_name} LIMIT 1").collect()
+        if history:
+            return str(history[0]["version"])
+    except Exception:
+        pass
+    return None
+
+
 def build_training_feature_frame(
     feature_frame: pd.DataFrame,
     *,
@@ -106,7 +118,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--experiment-name", default=None)
     parser.add_argument("--run-name", default="hierarchical-elo-poisson-lightgbm")
-    parser.add_argument("--registered-model-prefix", default=None)
+    parser.add_argument(
+        "--registered-model-prefix",
+        default=None,
+        help=(
+            "Unity Catalog prefix for registered models; each target registers "
+            "as <prefix>__<target> (e.g. football_analytics.gold.player_event"
+            "__shots_total)."
+        ),
+    )
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--learning-rate", type=float, default=0.025)
     parser.add_argument("--num-leaves", type=int, default=31)
@@ -124,6 +144,14 @@ def main() -> None:
         raise RuntimeError("PySpark is required to load the Databricks feature table") from exc
 
     spark = SparkSession.builder.getOrCreate()
+
+    if args.registered_model_prefix:
+        # Registered models live in the Unity Catalog registry (see commit
+        # "Configure MLflow to explicitly use Unity Catalog registry URI").
+        import mlflow
+
+        mlflow.set_registry_uri("databricks-uc")
+
     feature_frame = spark.table(args.feature_table).toPandas()
     training_frame = build_training_feature_frame(feature_frame)
     train_df, validation_df = temporal_train_validation_split(
@@ -137,6 +165,7 @@ def main() -> None:
         min_child_samples=args.min_child_samples,
         num_boost_round=args.num_boost_round,
     )
+    feature_table_version = _feature_table_version(spark, args.feature_table)
     result = train_poisson_lightgbm_with_mlflow(
         train_df,
         validation_df,
@@ -146,6 +175,10 @@ def main() -> None:
         experiment_name=args.experiment_name,
         run_name=args.run_name,
         registered_model_name_prefix=args.registered_model_prefix,
+        run_tags={
+            "feature_table_name": args.feature_table,
+            "feature_table_version": feature_table_version or "unknown",
+        },
     )
     print(json.dumps(result["metrics"], indent=2, sort_keys=True))
     print(json.dumps({"feature_columns": result["feature_columns"]}, indent=2, sort_keys=True))
