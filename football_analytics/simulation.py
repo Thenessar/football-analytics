@@ -18,7 +18,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -497,3 +498,207 @@ def allocate_event_totals(
             weights[:, repairable] = on_pitch[:, repairable].astype(float)
         totals[degenerate & (pitch_counts == 0)] = 0
     return multinomial_allocate(rng, totals, weights), totals
+
+
+def _distribution_stats(draws: np.ndarray, thresholds: Sequence[int]) -> Dict[str, float]:
+    """Summary statistics of one count distribution (sims,)."""
+
+    draws = np.asarray(draws, dtype=float)
+    percentiles = np.percentile(draws, [5, 25, 50, 75, 95])
+    stats = {
+        "sim_mean": float(draws.mean()),
+        "sim_std": float(draws.std()),
+        "p05": float(percentiles[0]),
+        "p25": float(percentiles[1]),
+        "p50": float(percentiles[2]),
+        "p75": float(percentiles[3]),
+        "p95": float(percentiles[4]),
+    }
+    for threshold in thresholds:
+        stats[f"p_ge_{threshold}"] = float((draws >= threshold).mean())
+    return stats
+
+
+def _score_matrix_json(result: SimulationResult) -> str:
+    """Scoreline probability matrix as compact JSON, keyed "goalsA-goalsB"."""
+
+    team_a, team_b = result.inputs.team_ids
+    goals_a = result.team_totals("goals_total", team_a)
+    goals_b = result.team_totals("goals_total", team_b)
+    pairs, counts = np.unique(np.stack([goals_a, goals_b]), axis=1, return_counts=True)
+    n_sims = float(len(goals_a))
+    matrix = {
+        f"{int(a)}-{int(b)}": round(count / n_sims, 6)
+        for a, b, count in zip(pairs[0], pairs[1], counts)
+    }
+    return json.dumps({
+        "team_a_id": int(team_a),
+        "team_b_id": int(team_b),
+        "matrix": matrix,
+    })
+
+
+def summarize_simulation(
+    result: SimulationResult,
+    *,
+    sim_set_id: str,
+    created_at_utc: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """Flattens raw draws into the sim table rows (backlog N4).
+
+    Grain: fixture_id / sim_set_id / entity_type ('player'|'team'|'fixture')
+    / entity_id / target_event. The fixture-level row carries the scoreline
+    matrix; player and team rows carry distribution statistics.
+    """
+
+    inputs = result.inputs
+    config = result.config
+    created_at = created_at_utc or datetime.now(timezone.utc)
+    base = {
+        "fixture_id": inputs.fixture_id,
+        "sim_set_id": sim_set_id,
+        "prediction_set_id": inputs.prediction_set_id,
+        "n_sims": int(config.n_sims),
+        "seed": int(config.seed),
+        "engine_version": SIMULATION_ENGINE_VERSION,
+        "score_matrix_json": None,
+        "created_at_utc": created_at,
+        "is_active_simulation": True,
+    }
+
+    records = []
+    players = inputs.players
+    for target in ALL_SIMULATION_TARGETS:
+        draws = result.counts[target]
+        for position, row in enumerate(players.itertuples()):
+            records.append({
+                **base,
+                "entity_type": "player",
+                "entity_id": int(row.player_id),
+                "entity_name": getattr(row, "player_name", None),
+                "team_id": int(row.team_id),
+                "position_group": getattr(row, "position_group", None),
+                "is_starting": bool(row.is_starting),
+                "target_event": target,
+                **_distribution_stats(draws[position], config.thresholds),
+            })
+        for team_id in inputs.team_ids:
+            records.append({
+                **base,
+                "entity_type": "team",
+                "entity_id": int(team_id),
+                "entity_name": None,
+                "team_id": int(team_id),
+                "position_group": None,
+                "is_starting": None,
+                "target_event": target,
+                **_distribution_stats(
+                    result.team_totals(target, team_id), config.thresholds
+                ),
+            })
+
+    records.append({
+        **base,
+        "entity_type": "fixture",
+        "entity_id": int(inputs.fixture_id),
+        "entity_name": None,
+        "team_id": None,
+        "position_group": None,
+        "is_starting": None,
+        "target_event": "scoreline",
+        "sim_mean": None,
+        "sim_std": None,
+        "p05": None,
+        "p25": None,
+        "p50": None,
+        "p75": None,
+        "p95": None,
+        **{f"p_ge_{t}": None for t in config.thresholds},
+        "score_matrix_json": _score_matrix_json(result),
+    })
+    return pd.DataFrame.from_records(records)
+
+
+def ensure_fixture_simulation_table(spark: Any, simulation_table: str) -> None:
+    """Creates the N4 simulation Delta table when missing."""
+
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {simulation_table} (
+            fixture_id INT,
+            sim_set_id STRING,
+            prediction_set_id STRING,
+            entity_type STRING,
+            entity_id BIGINT,
+            entity_name STRING,
+            team_id INT,
+            position_group STRING,
+            is_starting BOOLEAN,
+            target_event STRING,
+            n_sims INT,
+            seed INT,
+            engine_version STRING,
+            sim_mean DOUBLE,
+            sim_std DOUBLE,
+            p05 DOUBLE,
+            p25 DOUBLE,
+            p50 DOUBLE,
+            p75 DOUBLE,
+            p95 DOUBLE,
+            p_ge_1 DOUBLE,
+            p_ge_2 DOUBLE,
+            p_ge_3 DOUBLE,
+            score_matrix_json STRING,
+            created_at_utc TIMESTAMP,
+            is_active_simulation BOOLEAN
+        )
+        USING DELTA
+    """)
+
+
+# Must mirror ensure_fixture_simulation_table; strings left to inference.
+_SIMULATION_COLUMN_TYPES = {
+    "fixture_id": "int",
+    "entity_id": "bigint",
+    "team_id": "int",
+    "is_starting": "boolean",
+    "n_sims": "int",
+    "seed": "int",
+    "sim_mean": "double",
+    "sim_std": "double",
+    "p05": "double",
+    "p25": "double",
+    "p50": "double",
+    "p75": "double",
+    "p95": "double",
+    "p_ge_1": "double",
+    "p_ge_2": "double",
+    "p_ge_3": "double",
+    "created_at_utc": "timestamp",
+    "is_active_simulation": "boolean",
+}
+
+
+def write_fixture_simulation(
+    spark: Any,
+    records: pd.DataFrame,
+    *,
+    simulation_table: str,
+) -> Dict[str, int]:
+    """Stores simulation summaries with the shared Option C semantics.
+
+    Same sim_set_id reruns replace themselves; older sets for the same
+    fixture + engine version flip to is_active_simulation=false.
+    """
+
+    from football_analytics.delta_write import write_active_flag_records
+
+    return write_active_flag_records(
+        spark,
+        records,
+        table=simulation_table,
+        ensure_table=ensure_fixture_simulation_table,
+        column_types=_SIMULATION_COLUMN_TYPES,
+        set_id_column="sim_set_id",
+        flip_key_columns=("fixture_id", "engine_version"),
+        active_flag_column="is_active_simulation",
+    )

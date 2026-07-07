@@ -279,6 +279,140 @@ def test_simulation_means_track_predicted_means():
     assert bench_mean == pytest.approx(0.4 * (25.0 / 90.0) * 1.5, rel=0.10)
 
 
+def test_summarize_produces_player_team_and_scoreline_rows():
+    import json
+
+    from football_analytics.simulation import (
+        SIMULATION_ENGINE_VERSION,
+        summarize_simulation,
+    )
+
+    inputs = build_simulation_inputs(_active_predictions())
+    config = SimulationConfig(n_sims=500, seed=41)
+    result = simulate_fixture(inputs, config)
+    summary = summarize_simulation(result, sim_set_id="sim-set-1")
+
+    players, teams = 26, 2
+    targets = len(ALL_SIMULATION_TARGETS)
+    assert len(summary) == (players + teams) * targets + 1
+
+    # Grain is unique.
+    grain = ["fixture_id", "sim_set_id", "entity_type", "entity_id", "target_event"]
+    assert not summary.duplicated(subset=grain).any()
+    assert (summary["engine_version"] == SIMULATION_ENGINE_VERSION).all()
+    assert summary["is_active_simulation"].all()
+    assert (summary["prediction_set_id"] == "pred-set-1").all()
+
+    player_rows = summary[summary["entity_type"] == "player"]
+    assert (player_rows["p_ge_1"] >= player_rows["p_ge_2"]).all()
+    assert (player_rows["p_ge_2"] >= player_rows["p_ge_3"]).all()
+    assert (player_rows["p05"] <= player_rows["p95"]).all()
+
+    # Team mean equals the sum of its players' means (allocation identity).
+    for target in ("shots_total", "passes_total"):
+        team_rows = summary[(summary["entity_type"] == "team") & (summary["target_event"] == target)]
+        for row in team_rows.itertuples():
+            player_sum = player_rows[
+                (player_rows["team_id"] == row.team_id)
+                & (player_rows["target_event"] == target)
+            ]["sim_mean"].sum()
+            assert row.sim_mean == pytest.approx(player_sum, rel=1e-9)
+
+    scoreline = summary[summary["entity_type"] == "fixture"]
+    assert len(scoreline) == 1
+    matrix = json.loads(scoreline["score_matrix_json"].iloc[0])
+    assert matrix["team_a_id"] == 1 and matrix["team_b_id"] == 2
+    assert sum(matrix["matrix"].values()) == pytest.approx(1.0, abs=1e-6)
+
+
+class _FakeWriter:
+    def __init__(self, log):
+        self._log = log
+
+    def format(self, _fmt):
+        return self
+
+    def mode(self, mode):
+        self._log["mode"] = mode
+        return self
+
+    def option(self, key, value):
+        self._log.setdefault("options", {})[key] = value
+        return self
+
+    def saveAsTable(self, table):
+        self._log["table"] = table
+
+
+class _FakeColumn:
+    def cast(self, _data_type):
+        return self
+
+
+class _FakeFrame:
+    def __init__(self, log, columns):
+        self.write = _FakeWriter(log)
+        self.columns = list(columns)
+        self.casts = log.setdefault("casts", [])
+
+    def __getitem__(self, _name):
+        return _FakeColumn()
+
+    def withColumn(self, name, _column):
+        self.casts.append(name)
+        return self
+
+
+class _FakeSpark:
+    def __init__(self):
+        self.sql_statements = []
+        self.write_log = {}
+
+    def sql(self, statement):
+        self.sql_statements.append(" ".join(statement.split()))
+
+    def createDataFrame(self, records):
+        return _FakeFrame(self.write_log, records.columns)
+
+
+def test_simulation_write_appends_and_flips_older_active_sets():
+    from football_analytics.simulation import (
+        SIMULATION_ENGINE_VERSION,
+        summarize_simulation,
+        write_fixture_simulation,
+    )
+
+    inputs = build_simulation_inputs(_active_predictions())
+    result = simulate_fixture(inputs, SimulationConfig(n_sims=50, seed=43))
+    records = summarize_simulation(result, sim_set_id="sim-set-1")
+    spark = _FakeSpark()
+
+    summary = write_fixture_simulation(
+        spark, records, simulation_table="catalog.gold.sim_football__fixture_simulation"
+    )
+
+    assert summary["written"] == len(records)
+    assert summary["deactivated_sets"] == 1
+    assert spark.write_log["mode"] == "append"
+    assert spark.write_log["options"].get("mergeSchema") == "true"
+
+    create = spark.sql_statements[0]
+    assert "CREATE TABLE IF NOT EXISTS" in create
+    for column in ("sim_set_id", "entity_type", "score_matrix_json", "is_active_simulation"):
+        assert column in create
+
+    delete = spark.sql_statements[1]
+    assert delete.startswith("DELETE FROM")
+    assert "sim_set_id IN ('sim-set-1')" in delete
+
+    updates = [s for s in spark.sql_statements if s.startswith("UPDATE")]
+    assert len(updates) == 1
+    assert "SET is_active_simulation = false" in updates[0]
+    assert "fixture_id = 100" in updates[0]
+    assert f"engine_version = '{SIMULATION_ENGINE_VERSION}'" in updates[0]
+    assert "sim_set_id != 'sim-set-1'" in updates[0]
+
+
 def test_minutes_sampling_is_seeded_and_matches_p_plays():
     inputs = build_simulation_inputs(_active_predictions())
     config = SimulationConfig(n_sims=4000, seed=11)

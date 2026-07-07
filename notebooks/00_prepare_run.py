@@ -2,6 +2,7 @@
 from football_analytics.databricks.config import DatabricksPipelineConfig
 from football_analytics.databricks.tables import table_name
 from football_analytics.inference import PREDICTION_TABLE_NAME, ensure_player_event_predictions_table
+from football_analytics.simulation import SIMULATION_TABLE_NAME, ensure_fixture_simulation_table
 
 dbutils.widgets.text("fixture_id", "")
 dbutils.widgets.text("run_id", "manual")
@@ -36,11 +37,16 @@ for schema_name in {
 }:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {config.catalog}.{schema_name}")
 
-# The prediction table is written by the inference job but tested by dbt as a
-# source; create it up front so dbt source tests never hit a missing table.
+# The prediction and simulation tables are written by the inference job but
+# tested by dbt as sources; create them up front so dbt source tests never
+# hit a missing table.
 ensure_player_event_predictions_table(
     spark,
     table_name(config, "gold", PREDICTION_TABLE_NAME),
+)
+ensure_fixture_simulation_table(
+    spark,
+    table_name(config, "gold", SIMULATION_TABLE_NAME),
 )
 
 dbutils.jobs.taskValues.set(key="run_id", value=run_id)

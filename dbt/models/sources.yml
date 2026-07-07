@@ -75,3 +75,50 @@ sources:
               - accepted_values:
                   arguments:
                     values: ['confirmed_api', 'projected', 'offline_sample']
+
+      - name: sim_football__fixture_simulation
+        description: >
+          Monte Carlo fixture simulation summaries (ml_upgrade_backlog.md N4,
+          ADR 0005). Grain: one row per fixture_id/sim_set_id/entity_type/
+          entity_id/target_event; entity_type is player, team, or fixture
+          (the fixture row carries the scoreline matrix JSON). Written by
+          football_analytics/simulation.py with the shared append +
+          is_active_simulation strategy.
+        columns:
+          - name: fixture_id
+            tests:
+              - not_null
+          - name: sim_set_id
+            tests:
+              - not_null
+          - name: entity_type
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: ['player', 'team', 'fixture']
+          - name: target_event
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values:
+                      - offsides
+                      - shots_total
+                      - shots_on
+                      - goals_total
+                      - goals_assists
+                      - goals_saves
+                      - passes_total
+                      - fouls_drawn
+                      - fouls_committed
+                      - cards_yellow
+                      - cards_red
+                      - scoreline
+          - name: is_active_simulation
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: [true, false]
+                    quote: false

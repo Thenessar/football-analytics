@@ -415,42 +415,15 @@ def write_player_event_predictions(
       to is_active_prediction=false, leaving exactly one active set.
     """
 
-    if records.empty:
-        return {"written": 0, "deactivated_sets": 0}
+    from football_analytics.delta_write import write_active_flag_records
 
-    ensure_player_event_predictions_table(spark, prediction_table)
-    frame = spark.createDataFrame(records)
-    # Spark infers LONG for Python ints and can widen other types; cast to the
-    # exact DDL types so Delta never has to merge mismatched field types.
-    for column, data_type in _PREDICTION_COLUMN_TYPES.items():
-        if column in frame.columns:
-            frame = frame.withColumn(column, frame[column].cast(data_type))
-    set_ids = sorted(records["prediction_set_id"].unique())
-    quoted = ", ".join(f"'{set_id}'" for set_id in set_ids)
-    spark.sql(
-        f"DELETE FROM {prediction_table} WHERE prediction_set_id IN ({quoted})"
+    return write_active_flag_records(
+        spark,
+        records,
+        table=prediction_table,
+        ensure_table=ensure_player_event_predictions_table,
+        column_types=_PREDICTION_COLUMN_TYPES,
+        set_id_column="prediction_set_id",
+        flip_key_columns=("fixture_id", "model_name", "model_version"),
+        active_flag_column="is_active_prediction",
     )
-    # mergeSchema lets additive column changes (e.g. K5's p_plays /
-    # expected_minutes_if_plays) land on tables created before the change
-    # without a manual migration; Delta appends never drop or retype columns
-    # this way.
-    frame.write.format("delta").mode("append").option(
-        "mergeSchema", "true"
-    ).saveAsTable(prediction_table)
-
-    deactivated = 0
-    keys = records[["fixture_id", "model_name", "model_version", "prediction_set_id"]].drop_duplicates()
-    for row in keys.itertuples():
-        spark.sql(
-            f"""
-            UPDATE {prediction_table}
-            SET is_active_prediction = false
-            WHERE fixture_id = {int(row.fixture_id)}
-              AND model_name = '{row.model_name}'
-              AND model_version = '{row.model_version}'
-              AND prediction_set_id != '{row.prediction_set_id}'
-              AND is_active_prediction = true
-            """
-        )
-        deactivated += 1
-    return {"written": len(records), "deactivated_sets": deactivated}
