@@ -32,3 +32,50 @@ unit_tests:
         - {fixture_id: 6, team_id: 1, player_id: 7, expected_minutes: 88.0, expected_minutes_if_plays: 88.0, p_plays: 1.0, expected_minutes_method: "starter_l5_trimmed_shrunk", prior_appearance_count: 3}
         - {fixture_id: 6, team_id: 1, player_id: 8, expected_minutes: 85.0, expected_minutes_if_plays: 85.0, p_plays: 1.0, expected_minutes_method: "starter_prior", prior_appearance_count: 0}
         - {fixture_id: 6, team_id: 1, player_id: 9, expected_minutes: 12.5, expected_minutes_if_plays: 25.0, p_plays: 0.5, expected_minutes_method: "bench_prior", prior_appearance_count: 0}
+
+  - name: expected_minutes_conditions_on_confirmed_role
+    description: >
+      The user-reported defect scenarios (ml_upgrade_backlog.md K2). A regular
+      starter (five 90-minute starts) named on the BENCH today must be priced
+      off the bench branch (0.5 * 25 = 12.5, not ~90). A habitual sub (five
+      20-minute cameos) promoted to the XI must be priced off the starter
+      branch (85, not ~20). Unused-sub namings (0 or null minutes) lower
+      p_plays but stay out of the cameo mean: 2 unused + 2 x 30-minute cameos
+      give p_plays = (2 + 4*0.5) / (4 + 4) = 0.5 and if_plays =
+      (2*30 + 2*25) / 4 = 27.5, so expected = 13.75.
+    model: fct_football__player_expected_minutes
+    given:
+      - input: ref('stg_football__fixtures')
+        rows:
+          - {fixture_id: 1, fixture_date_utc: "2026-06-01 18:00:00"}
+          - {fixture_id: 2, fixture_date_utc: "2026-06-05 18:00:00"}
+          - {fixture_id: 3, fixture_date_utc: "2026-06-09 18:00:00"}
+          - {fixture_id: 4, fixture_date_utc: "2026-06-13 18:00:00"}
+          - {fixture_id: 5, fixture_date_utc: "2026-06-17 18:00:00"}
+          - {fixture_id: 6, fixture_date_utc: "2026-06-21 18:00:00"}
+      - input: ref('stg_football__lineups')
+        rows:
+          - {fixture_id: 6, team_id: 1, team_name: "Argentina", player_id: 21, player_name: "Benched Regular", position: "M", is_starting: false, formation: "4-3-3"}
+          - {fixture_id: 6, team_id: 1, team_name: "Argentina", player_id: 22, player_name: "Promoted Sub", position: "F", is_starting: true, formation: "4-3-3"}
+          - {fixture_id: 6, team_id: 1, team_name: "Argentina", player_id: 23, player_name: "Fringe Sub", position: "D", is_starting: false, formation: "4-3-3"}
+      - input: ref('stg_football__player_match_stats')
+        rows:
+          - {fixture_id: 1, team_id: 1, player_id: 21, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 2, team_id: 1, player_id: 21, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 3, team_id: 1, player_id: 21, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 4, team_id: 1, player_id: 21, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 5, team_id: 1, player_id: 21, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 1, team_id: 1, player_id: 22, games_minutes: 20, games_substitute: true}
+          - {fixture_id: 2, team_id: 1, player_id: 22, games_minutes: 20, games_substitute: true}
+          - {fixture_id: 3, team_id: 1, player_id: 22, games_minutes: 20, games_substitute: true}
+          - {fixture_id: 4, team_id: 1, player_id: 22, games_minutes: 20, games_substitute: true}
+          - {fixture_id: 5, team_id: 1, player_id: 22, games_minutes: 20, games_substitute: true}
+          - {fixture_id: 1, team_id: 1, player_id: 23, games_minutes: 0, games_substitute: true}
+          - {fixture_id: 2, team_id: 1, player_id: 23, games_minutes: null, games_substitute: true}
+          - {fixture_id: 3, team_id: 1, player_id: 23, games_minutes: 30, games_substitute: true}
+          - {fixture_id: 4, team_id: 1, player_id: 23, games_minutes: 30, games_substitute: true}
+    expect:
+      rows:
+        - {fixture_id: 6, team_id: 1, player_id: 21, expected_minutes: 12.5, expected_minutes_if_plays: 25.0, p_plays: 0.5, expected_minutes_method: "bench_prior", starts_in_history_count: 5, bench_namings_in_history_count: 0, prior_appearance_count: 0}
+        - {fixture_id: 6, team_id: 1, player_id: 22, expected_minutes: 85.0, expected_minutes_if_plays: 85.0, p_plays: 1.0, expected_minutes_method: "starter_prior", starts_in_history_count: 0, bench_namings_in_history_count: 5, prior_appearance_count: 0}
+        - {fixture_id: 6, team_id: 1, player_id: 23, expected_minutes: 13.75, expected_minutes_if_plays: 27.5, p_plays: 0.5, expected_minutes_method: "bench_l10_shrunk", starts_in_history_count: 0, bench_namings_in_history_count: 4, prior_appearance_count: 4}

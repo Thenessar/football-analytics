@@ -121,7 +121,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - Bounds singular test extended: `p_plays` ∈ [0,1], `expected_minutes_if_plays` ∈ [0,120], starters must have `p_plays = 1`.
   - Unit test uses a 3-start history (90/90/25-red-card) so the shrunk trimmed mean is exactly 88.0 — float-exact for dbt's row comparison.
 
-### K2. dbt unit tests for the v2 estimator
+### K2. dbt unit tests for the v2 estimator — ✅ DONE (2026-07-07)
 - **Files:** `dbt/models/marts/fct_football__player_expected_minutes_unit_tests.yml`, `dbt/tests/`.
 - **Depends on:** K1.
 - **Acceptance criteria (mocked-input dbt unit tests, one scenario each):**
@@ -130,6 +130,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - **Unused-sub counting:** history = 4 bench namings, 2 unused (0') + 2 × 30' → `p_plays` reflects 2/4 shrunk toward prior; `if_plays` uses only the two 30' observations.
   - **Red-card robustness preserved:** starter with one 25' start among four 90' starts → trimmed mean drops it (≈90 before shrinkage).
   - Bounds test still enforces [0, 120] and `p_plays` ∈ [0, 1].
+- **Implementation notes:** second unit test `expected_minutes_conditions_on_confirmed_role` covers the three defect scenarios with float-exact expectations (12.5 / 85.0 / 13.75); the red-card case landed in K1's rewritten first test (3-start history so the shrunk result is exactly 88.0). One unused-sub row uses `games_minutes: null` to pin the coalesce-to-0 path. Bounds extensions landed in K1.
 
 ### K3. Calibrate the priors from production history + supersede ADR 0002
 - **Files:** `dbt/dbt_project.yml` (var values), `docs/adr/0002-expected-minutes-estimator.md` (mark Superseded), new `docs/adr/0004-expected-minutes-role-conditional.md`.
