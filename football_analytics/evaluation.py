@@ -333,6 +333,63 @@ def skill_score(model_loss: float, baseline_loss: float) -> float:
     return float(1.0 - model_loss / baseline_loss)
 
 
+def central_interval_coverage(
+    y_true: Iterable[float],
+    lower_bounds: Iterable[float],
+    upper_bounds: Iterable[float],
+) -> float:
+    """Share of actuals inside their central prediction interval (backlog N6).
+
+    For discrete counts the interval endpoints are quantiles of the simulated
+    distribution, so realized coverage is typically >= nominal (quantiles are
+    conservative on atoms); N6's acceptance band accounts for that.
+    """
+
+    y = _as_float_array(y_true)
+    lower = _as_float_array(lower_bounds)
+    upper = _as_float_array(upper_bounds)
+    if len(y) == 0:
+        return float("nan")
+    return float(np.mean((y >= lower) & (y <= upper)))
+
+
+def randomized_pit(
+    y_true: Iterable[float],
+    cdf_at_y: Iterable[float],
+    cdf_below_y: Iterable[float],
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    """Randomized probability integral transform for count outcomes.
+
+    ``u = F(y-1) + V * (F(y) - F(y-1))`` with V ~ U(0,1): exactly uniform
+    when the predictive distribution matches the data-generating one, which
+    makes uniformity of the returned values a direct calibration test for
+    the simulator's per-player distributions.
+    """
+
+    del y_true  # part of the signature for clarity; the CDFs encode y
+    at = np.clip(_as_float_array(cdf_at_y), 0.0, 1.0)
+    below = np.clip(_as_float_array(cdf_below_y), 0.0, 1.0)
+    generator = rng or np.random.default_rng(0)
+    v = generator.random(len(at))
+    return below + v * np.clip(at - below, 0.0, None)
+
+
+def pit_uniformity_summary(pit_values: Iterable[float], n_bins: int = 10) -> Dict[str, object]:
+    """Histogram-based uniformity check: bin shares and max deviation from 1/n."""
+
+    pit = _as_float_array(pit_values)
+    if len(pit) == 0:
+        return {"bin_shares": [], "max_abs_deviation": float("nan"), "n": 0}
+    counts, _ = np.histogram(np.clip(pit, 0.0, 1.0 - 1e-12), bins=n_bins, range=(0.0, 1.0))
+    shares = counts / len(pit)
+    return {
+        "bin_shares": [float(share) for share in shares],
+        "max_abs_deviation": float(np.max(np.abs(shares - 1.0 / n_bins))),
+        "n": int(len(pit)),
+    }
+
+
 def rolling_origin_folds(
     frame: pd.DataFrame,
     *,
