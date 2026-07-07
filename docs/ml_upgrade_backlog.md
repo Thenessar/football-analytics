@@ -173,13 +173,14 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - `skill_score(model_logloss, baseline_logloss)` — `1 − model/baseline` (positive = model beats baseline).
 - **Implementation notes:** module also carries `count_cdf`/`prob_at_least` (shared Poisson/NB machinery for M1), `validation_metric_suite` (the composite L3 wires into training — returns `{"metrics": scalars, "artifacts": reliability tables}` so quota discipline is structural), and `rolling_origin_folds` (pulled forward from L2 — it belongs with the other pure primitives). `poisson_log_loss` moved here as the canonical implementation; `ml_training` re-exports it (no cycle: evaluation never imports ml_training). RPS auto-extends its grid to `max(max_k, y_max + 5)` so truncation never bites the observed support. NB pmf via lgamma in log space, no scipy dependency; NB tail unit-tested against the exact geometric case (mu=1, alpha=1 ⇒ P(Y≥3) = 1/8). 13 hand-computed tests in `tests/test_evaluation.py`.
 
-### L2. Rolling-origin backtest harness
+### L2. Rolling-origin backtest harness — ✅ DONE (2026-07-07)
 - **Files:** `football_analytics/evaluation.py` (add `rolling_origin_folds`), `scripts/train_poisson_lgbm.py` (new `--backtest` mode), `tests/test_evaluation.py`.
 - **Depends on:** L1.
 - **Acceptance criteria:**
   - `rolling_origin_folds(frame, season_column="league_season", min_train_seasons=2)` yields expanding-window (train ≤ season N−1, validate = season N) folds, reusing `season_train_validation_split` semantics per fold.
   - `--backtest` trains and evaluates per fold **without registering models**, writes one consolidated artifact (`backtest_report.json` + CSV: per target × fold × metric) and logs only per-target cross-fold mean/std scalars to MLflow (metric-quota discipline, Working Agreement #4).
   - This harness is the required evidence for every Epic M adoption decision.
+- **Implementation notes:** `rolling_origin_folds` landed with L1 (pure primitive). `run_rolling_origin_backtest` lives in `ml_training.py` and returns `report`/`summary`/`skipped` frames; the booster-fitting core was extracted into `_fit_poisson_booster` shared with `train_poisson_lightgbm_with_mlflow` so the two paths cannot diverge. Fold/target pairs are skipped (with reason) below 50 train rows or with zero positive labels — `cards_red` on small folds hits this by design. `--backtest` in the script logs only cross-fold mean/std scalars plus a consolidated CSV/JSON artifact bundle in a model-free run. End-to-end test trains real LightGBM boosters on synthetic seasons and asserts positive skill vs the position-group baseline on every fold.
 
 ### L3. Wire the new metrics into standard training runs
 - **Files:** `football_analytics/ml_training.py` (`train_poisson_lightgbm_with_mlflow`), `tests/` (extend existing training tests if present, else add `tests/test_ml_training_metrics.py` with a lightgbm-optional skip marker).

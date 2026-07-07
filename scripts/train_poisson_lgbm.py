@@ -22,6 +22,7 @@ from football_analytics.ml_training import (
     DEFAULT_TARGET_COLUMNS,
     PoissonLightGBMConfig,
     add_model_interaction_features,
+    run_rolling_origin_backtest,
     season_train_validation_split,
     temporal_train_validation_split,
     train_poisson_lightgbm_with_mlflow,
@@ -147,7 +148,74 @@ def parse_args() -> argparse.Namespace:
         default=50,
         help="Stop each target at its best validation iteration; 0 disables.",
     )
+    parser.add_argument(
+        "--backtest",
+        action="store_true",
+        help=(
+            "Rolling-origin backtest mode: train throwaway models per season "
+            "fold, log cross-fold metric means/stds and a consolidated report "
+            "artifact, register nothing (ml_upgrade_backlog.md L2)."
+        ),
+    )
+    parser.add_argument(
+        "--min-train-seasons",
+        type=int,
+        default=2,
+        help="Backtest mode: earliest validation season must have this many prior seasons.",
+    )
     return parser.parse_args()
+
+
+def run_backtest_mode(args: "argparse.Namespace", training_frame: pd.DataFrame, config: PoissonLightGBMConfig) -> None:
+    """Runs the L2 backtest and logs quota-safe aggregates to one MLflow run.
+
+    Per-fold detail goes to artifacts (Working Agreement #4); only per-target
+    cross-fold mean/std land as metrics. No models are logged or registered,
+    so the per-model metric quota can never trip.
+    """
+
+    import tempfile
+    from pathlib import Path
+
+    import mlflow
+
+    try:
+        mlflow.autolog(disable=True)
+    except Exception:
+        pass
+
+    result = run_rolling_origin_backtest(
+        training_frame,
+        target_columns=_parse_csv(args.targets) or DEFAULT_TARGET_COLUMNS,
+        feature_columns=_parse_csv(args.features),
+        config=config,
+        min_train_seasons=args.min_train_seasons,
+    )
+
+    if args.experiment_name:
+        mlflow.set_experiment(args.experiment_name)
+    with mlflow.start_run(run_name=f"{args.run_name}-backtest"):
+        mlflow.log_param("mode", "rolling_origin_backtest")
+        mlflow.log_param("min_train_seasons", args.min_train_seasons)
+        mlflow.log_param("feature_table", args.feature_table)
+        for row in result["summary"].itertuples():
+            mlflow.log_metric(f"{row.target}_{row.metric}_mean", row.mean)
+            if row.folds > 1:
+                mlflow.log_metric(f"{row.target}_{row.metric}_std", row.std)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            result["report"].to_csv(artifact_dir / "backtest_report.csv", index=False)
+            result["summary"].to_csv(artifact_dir / "backtest_summary.csv", index=False)
+            result["skipped"].to_csv(artifact_dir / "backtest_skipped.csv", index=False)
+            (artifact_dir / "backtest_report.json").write_text(
+                result["report"].to_json(orient="records"), encoding="utf-8"
+            )
+            mlflow.log_artifacts(str(artifact_dir), artifact_path="backtest")
+
+    print(result["summary"].to_string(index=False))
+    if not result["skipped"].empty:
+        print("\nSkipped fold/target pairs:")
+        print(result["skipped"].to_string(index=False))
 
 
 def main() -> None:
@@ -169,6 +237,18 @@ def main() -> None:
 
     feature_frame = spark.table(args.feature_table).toPandas()
     training_frame = build_training_feature_frame(feature_frame)
+
+    if args.backtest:
+        config = PoissonLightGBMConfig(
+            learning_rate=args.learning_rate,
+            num_leaves=args.num_leaves,
+            min_child_samples=args.min_child_samples,
+            num_boost_round=args.num_boost_round,
+            early_stopping_rounds=args.early_stopping_rounds,
+        )
+        run_backtest_mode(args, training_frame, config)
+        return
+
     validation_seasons = _parse_csv(args.validation_seasons)
     if validation_seasons:
         train_df, validation_df = season_train_validation_split(

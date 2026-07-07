@@ -422,6 +422,53 @@ def _log_shap_artifacts(
         )
 
 
+def _fit_poisson_booster(
+    *,
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    train_exposure: np.ndarray,
+    X_valid: pd.DataFrame,
+    y_valid: np.ndarray,
+    valid_exposure: np.ndarray,
+    config: "PoissonLightGBMConfig",
+    log_period: Optional[int] = 100,
+) -> Any:
+    """Trains one exposure-offset Poisson booster (shared by training + backtest).
+
+    The LightGBM Dataset ``init_score`` is set to log(exposure), so the
+    booster learns a per-90 log intensity while labels stay raw match counts.
+    """
+
+    import lightgbm as lgb
+
+    train_set = lgb.Dataset(
+        X_train,
+        label=y_train,
+        init_score=np.log(train_exposure),
+        free_raw_data=False,
+    )
+    valid_set = lgb.Dataset(
+        X_valid,
+        label=y_valid,
+        init_score=np.log(valid_exposure),
+        reference=train_set,
+        free_raw_data=False,
+    )
+    callbacks = []
+    if log_period:
+        callbacks.append(lgb.log_evaluation(period=log_period))
+    if config.early_stopping_rounds and config.early_stopping_rounds > 0:
+        callbacks.append(lgb.early_stopping(config.early_stopping_rounds, verbose=False))
+    return lgb.train(
+        config.to_lightgbm_params(),
+        train_set,
+        num_boost_round=config.num_boost_round,
+        valid_sets=[train_set, valid_set],
+        valid_names=["train", "validation"],
+        callbacks=callbacks,
+    )
+
+
 def _lightgbm_log_model_kwargs(
     log_model_fn: Any,
     *,
@@ -543,32 +590,14 @@ def train_poisson_lightgbm_with_mlflow(
                     exposure_column=exposure_column,
                 )
 
-                train_set = lgb.Dataset(
-                    X_train,
-                    label=y_train,
-                    init_score=np.log(train_exposure),
-                    free_raw_data=False,
-                )
-                valid_set = lgb.Dataset(
-                    X_valid,
-                    label=y_valid,
-                    init_score=np.log(valid_exposure),
-                    reference=train_set,
-                    free_raw_data=False,
-                )
-
-                callbacks = [lgb.log_evaluation(period=100)]
-                if cfg.early_stopping_rounds and cfg.early_stopping_rounds > 0:
-                    callbacks.append(
-                        lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)
-                    )
-                booster = lgb.train(
-                    cfg.to_lightgbm_params(),
-                    train_set,
-                    num_boost_round=cfg.num_boost_round,
-                    valid_sets=[train_set, valid_set],
-                    valid_names=["train", "validation"],
-                    callbacks=callbacks,
+                booster = _fit_poisson_booster(
+                    X_train=X_train,
+                    y_train=y_train,
+                    train_exposure=train_exposure,
+                    X_valid=X_valid,
+                    y_valid=y_valid,
+                    valid_exposure=valid_exposure,
+                    config=cfg,
                 )
                 # Each target keeps its best-validation iteration (LightGBM
                 # predicts with best_iteration by default after early stop).
@@ -706,6 +735,117 @@ def season_train_validation_split(
     if validation.empty:
         raise ValueError("No rows found for the requested validation seasons")
     return train, validation
+
+
+def run_rolling_origin_backtest(
+    frame: pd.DataFrame,
+    *,
+    target_columns: Sequence[str] = DEFAULT_TARGET_COLUMNS,
+    feature_columns: Optional[Sequence[str]] = None,
+    exposure_column: str = "games_minutes",
+    config: Optional[PoissonLightGBMConfig] = None,
+    season_column: str = "league_season",
+    min_train_seasons: int = 2,
+    min_train_rows: int = 50,
+) -> Dict[str, pd.DataFrame]:
+    """Expanding-window chronological backtest (ml_upgrade_backlog.md L2).
+
+    Trains one throwaway booster per (validation season, target) — nothing is
+    registered — and scores each with the full L-series metric suite. Returns:
+
+    - ``report``: long frame, one row per season/target/metric.
+    - ``summary``: per target/metric mean and std across folds — the numbers
+      every Epic M adoption decision must cite.
+    - ``skipped``: season/target pairs that could not be scored and why.
+    """
+
+    from football_analytics.evaluation import rolling_origin_folds, validation_metric_suite
+
+    cfg = config or PoissonLightGBMConfig()
+    selected_features = _select_available_features(frame, feature_columns)
+
+    report_rows: list[Dict[str, Any]] = []
+    skipped_rows: list[Dict[str, Any]] = []
+
+    for season, train_df, valid_df in rolling_origin_folds(
+        frame, season_column=season_column, min_train_seasons=min_train_seasons
+    ):
+        for target in target_columns:
+            target_train = filter_rows_for_target(train_df, target)
+            target_valid = filter_rows_for_target(valid_df, target)
+            if len(target_train) < min_train_rows or target_valid.empty:
+                skipped_rows.append({
+                    "season": season,
+                    "target": target,
+                    "reason": f"insufficient rows (train={len(target_train)}, valid={len(target_valid)})",
+                })
+                continue
+
+            X_train, y_train, train_exposure = _prepare_xy(
+                target_train,
+                target_column=target,
+                feature_columns=selected_features,
+                exposure_column=exposure_column,
+            )
+            if y_train.sum() <= 0:
+                skipped_rows.append({
+                    "season": season,
+                    "target": target,
+                    "reason": "no positive labels in training fold",
+                })
+                continue
+            X_valid, y_valid, valid_exposure = _prepare_xy(
+                target_valid,
+                target_column=target,
+                feature_columns=selected_features,
+                exposure_column=exposure_column,
+            )
+
+            booster = _fit_poisson_booster(
+                X_train=X_train,
+                y_train=y_train,
+                train_exposure=train_exposure,
+                X_valid=X_valid,
+                y_valid=y_valid,
+                valid_exposure=valid_exposure,
+                config=cfg,
+                log_period=None,
+            )
+            mu_valid = np.exp(booster.predict(X_valid, raw_score=True) + np.log(valid_exposure))
+
+            metrics = dict(evaluate_count_predictions(y_valid, mu_valid))
+            suite = validation_metric_suite(
+                train_frame=target_train,
+                valid_frame=target_valid,
+                y_valid=y_valid,
+                mu_valid=mu_valid,
+                target=target,
+                train_exposure=train_exposure,
+                valid_exposure=valid_exposure,
+            )
+            metrics.update(suite["metrics"])
+            for metric_name, metric_value in metrics.items():
+                report_rows.append({
+                    "season": season,
+                    "target": target,
+                    "metric": metric_name,
+                    "value": float(metric_value),
+                })
+
+    report = pd.DataFrame(report_rows, columns=["season", "target", "metric", "value"])
+    if report.empty:
+        summary = pd.DataFrame(columns=["target", "metric", "mean", "std", "folds"])
+    else:
+        summary = (
+            report.groupby(["target", "metric"])["value"]
+            .agg(mean="mean", std="std", folds="count")
+            .reset_index()
+        )
+    return {
+        "report": report,
+        "summary": summary,
+        "skipped": pd.DataFrame(skipped_rows, columns=["season", "target", "reason"]),
+    }
 
 
 def temporal_train_validation_split(
