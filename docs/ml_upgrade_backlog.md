@@ -161,7 +161,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
 
 ## Epic L — Evaluation & Metrics Upgrade (fixes D-3, enables M/N decisions)
 
-### L1. `football_analytics/evaluation.py` — proper scoring + calibration + dispersion primitives
+### L1. `football_analytics/evaluation.py` — proper scoring + calibration + dispersion primitives — ✅ DONE (2026-07-07)
 - **Files:** new `football_analytics/evaluation.py`, new `tests/test_evaluation.py`.
 - **Depends on:** nothing (pure numpy/pandas; no LightGBM/MLflow imports at module top — follow the lazy-import convention of `ml_training.py`).
 - **Required functions (pure, unit-tested against hand-computed values):**
@@ -171,6 +171,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - `within_fixture_ranking(frame, group_cols=("fixture_id","team_id"), pred_col, actual_col)` — mean Spearman ρ across groups (groups with all-zero actuals excluded and counted separately) and top-1/top-3 leader hit rates ("did the predicted team leader actually lead").
   - `poisson_baseline_rates(train_frame, target, group_cols=("position_group",))` — per-90 rate baselines: (a) position-group global rate, (b) player's own `<target>_l5_p90` (already a mart column). Returns baseline means = rate × exposure.
   - `skill_score(model_logloss, baseline_logloss)` — `1 − model/baseline` (positive = model beats baseline).
+- **Implementation notes:** module also carries `count_cdf`/`prob_at_least` (shared Poisson/NB machinery for M1), `validation_metric_suite` (the composite L3 wires into training — returns `{"metrics": scalars, "artifacts": reliability tables}` so quota discipline is structural), and `rolling_origin_folds` (pulled forward from L2 — it belongs with the other pure primitives). `poisson_log_loss` moved here as the canonical implementation; `ml_training` re-exports it (no cycle: evaluation never imports ml_training). RPS auto-extends its grid to `max(max_k, y_max + 5)` so truncation never bites the observed support. NB pmf via lgamma in log space, no scipy dependency; NB tail unit-tested against the exact geometric case (mu=1, alpha=1 ⇒ P(Y≥3) = 1/8). 13 hand-computed tests in `tests/test_evaluation.py`.
 
 ### L2. Rolling-origin backtest harness
 - **Files:** `football_analytics/evaluation.py` (add `rolling_origin_folds`), `scripts/train_poisson_lgbm.py` (new `--backtest` mode), `tests/test_evaluation.py`.

@@ -20,6 +20,10 @@ import tempfile
 import numpy as np
 import pandas as pd
 
+# Canonical scoring primitives live in evaluation.py (ml_upgrade_backlog.md
+# L1); poisson_log_loss is re-exported here for backward compatibility.
+from football_analytics.evaluation import poisson_log_loss  # noqa: F401
+
 
 # All 11 target events from business_logic.md §2, trained independently
 # against fct_football__player_event_features.
@@ -271,15 +275,6 @@ def exposure_from_minutes(minutes: Iterable[float]) -> np.ndarray:
         minutes = minutes.iloc[:, 0]
     values = pd.to_numeric(pd.Series(minutes), errors="coerce").fillna(0.0).to_numpy(dtype=float)
     return np.clip(values / 90.0, 1e-6, None)
-
-
-def poisson_log_loss(y_true: Iterable[float], y_mean: Iterable[float]) -> float:
-    """Mean Poisson negative log likelihood, including the log-factorial term."""
-
-    y = np.asarray(list(y_true), dtype=float)
-    mu = np.clip(np.asarray(list(y_mean), dtype=float), 1e-12, None)
-    lgamma = np.vectorize(lambda value: math.lgamma(value + 1.0))
-    return float(np.mean(mu - y * np.log(mu) + lgamma(y)))
 
 
 def evaluate_count_predictions(
