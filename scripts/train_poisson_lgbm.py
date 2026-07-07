@@ -22,6 +22,7 @@ from football_analytics.ml_training import (
     DEFAULT_TARGET_COLUMNS,
     PoissonLightGBMConfig,
     add_model_interaction_features,
+    load_tuned_configs,
     run_baseline_reference,
     run_rolling_origin_backtest,
     season_train_validation_split,
@@ -173,6 +174,19 @@ def parse_args() -> argparse.Namespace:
             "trains and registers nothing (ml_upgrade_backlog.md L4)."
         ),
     )
+    parser.add_argument(
+        "--tuned-params-dir",
+        default="config/lgbm_params",
+        help=(
+            "Directory of adopted per-target tuning results from "
+            "scripts/tune_lgbm.py (ml_upgrade_backlog.md M3)."
+        ),
+    )
+    parser.add_argument(
+        "--ignore-tuned-params",
+        action="store_true",
+        help="Train every target with the shared CLI config only.",
+    )
     return parser.parse_args()
 
 
@@ -318,6 +332,12 @@ def main() -> None:
         num_boost_round=args.num_boost_round,
         early_stopping_rounds=args.early_stopping_rounds,
     )
+    per_target_configs = (
+        {} if args.ignore_tuned_params else load_tuned_configs(args.tuned_params_dir)
+    )
+    if per_target_configs:
+        print(f"Using tuned configs for: {sorted(per_target_configs)}")
+
     feature_table_version = _feature_table_version(spark, args.feature_table)
     result = train_poisson_lightgbm_with_mlflow(
         train_df,
@@ -325,6 +345,7 @@ def main() -> None:
         target_columns=_parse_csv(args.targets) or DEFAULT_TARGET_COLUMNS,
         feature_columns=_parse_csv(args.features),
         config=config,
+        per_target_configs=per_target_configs,
         experiment_name=args.experiment_name,
         run_name=args.run_name,
         registered_model_name_prefix=args.registered_model_prefix,

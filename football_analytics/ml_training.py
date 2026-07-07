@@ -595,6 +595,7 @@ def train_poisson_lightgbm_with_mlflow(
     feature_columns: Optional[Sequence[str]] = None,
     exposure_column: str = "games_minutes",
     config: Optional[PoissonLightGBMConfig] = None,
+    per_target_configs: Optional[Mapping[str, PoissonLightGBMConfig]] = None,
     experiment_name: Optional[str] = None,
     run_name: str = "hierarchical-elo-poisson-lightgbm",
     registered_model_name_prefix: Optional[str] = None,
@@ -611,6 +612,10 @@ def train_poisson_lightgbm_with_mlflow(
     `catalog.schema.player_event` registers `player_event__shots_total`).
     `run_tags` should carry feature-table lineage (`feature_table_name`,
     `feature_table_version`) so prediction rows can reference them (Epic H).
+
+    `per_target_configs` (M3) overrides the shared `config` for specific
+    targets — typically the adopted results of `scripts/tune_lgbm.py` loaded
+    via `load_tuned_configs`.
     """
 
     try:
@@ -675,6 +680,13 @@ def train_poisson_lightgbm_with_mlflow(
                 mlflow.log_param(f"{target}_train_rows", len(target_train_df))
                 mlflow.log_param(f"{target}_validation_rows", len(target_valid_df))
 
+                target_cfg = (per_target_configs or {}).get(target, cfg)
+                if target_cfg is not cfg:
+                    mlflow.log_param(
+                        f"{target}_config",
+                        json.dumps(target_cfg.to_lightgbm_params(), sort_keys=True),
+                    )
+
                 X_train, y_train, train_exposure = _prepare_xy(
                     target_train_df,
                     target_column=target,
@@ -695,13 +707,13 @@ def train_poisson_lightgbm_with_mlflow(
                     X_valid=X_valid,
                     y_valid=y_valid,
                     valid_exposure=valid_exposure,
-                    config=cfg,
+                    config=target_cfg,
                 )
                 # Each target keeps its best-validation iteration (LightGBM
                 # predicts with best_iteration by default after early stop).
                 mlflow.log_param(
                     f"{target}_best_iteration",
-                    booster.best_iteration or cfg.num_boost_round,
+                    booster.best_iteration or target_cfg.num_boost_round,
                 )
                 train_mu = np.exp(
                     booster.predict(X_train, raw_score=True) + np.log(train_exposure)
@@ -1023,6 +1035,187 @@ def run_rolling_origin_backtest(
         "summary": summary,
         "skipped": pd.DataFrame(skipped_rows, columns=["season", "target", "reason"]),
     }
+
+
+def cross_fold_rps(
+    frame: pd.DataFrame,
+    *,
+    target: str,
+    feature_columns: Sequence[str],
+    config: PoissonLightGBMConfig,
+    exposure_column: str = "games_minutes",
+    season_column: str = "league_season",
+    min_train_seasons: int = 2,
+    min_train_rows: int = 50,
+) -> float:
+    """Cross-fold mean RPS for one target under one config (M3 objective).
+
+    Lean sibling of ``run_rolling_origin_backtest``: trains per fold but
+    skips baselines/calibration/ranking, because a tuning trial only needs
+    the objective. Returns ``inf`` when no fold is scoreable so optimizers
+    reject the trial.
+    """
+
+    from football_analytics.evaluation import ranked_probability_score, rolling_origin_folds
+
+    fold_scores = []
+    for _, train_df, valid_df in rolling_origin_folds(
+        frame, season_column=season_column, min_train_seasons=min_train_seasons
+    ):
+        target_train = filter_rows_for_target(train_df, target)
+        target_valid = filter_rows_for_target(valid_df, target)
+        if len(target_train) < min_train_rows or target_valid.empty:
+            continue
+        X_train, y_train, train_exposure = _prepare_xy(
+            target_train,
+            target_column=target,
+            feature_columns=feature_columns,
+            exposure_column=exposure_column,
+        )
+        if y_train.sum() <= 0:
+            continue
+        X_valid, y_valid, valid_exposure = _prepare_xy(
+            target_valid,
+            target_column=target,
+            feature_columns=feature_columns,
+            exposure_column=exposure_column,
+        )
+        booster = _fit_poisson_booster(
+            X_train=X_train,
+            y_train=y_train,
+            train_exposure=train_exposure,
+            X_valid=X_valid,
+            y_valid=y_valid,
+            valid_exposure=valid_exposure,
+            config=config,
+            log_period=None,
+        )
+        mu_valid = np.exp(booster.predict(X_valid, raw_score=True) + np.log(valid_exposure))
+        fold_scores.append(ranked_probability_score(y_valid, mu_valid))
+
+    finite = [score for score in fold_scores if np.isfinite(score)]
+    return float(np.mean(finite)) if finite else float("inf")
+
+
+# Search space for M3 tuning; num_boost_round stays high because early
+# stopping picks the effective round count per fold.
+_TUNING_NUM_BOOST_ROUND = 1200
+
+
+def tune_target_hyperparameters(
+    frame: pd.DataFrame,
+    *,
+    target: str,
+    feature_columns: Optional[Sequence[str]] = None,
+    n_trials: int = 50,
+    min_train_seasons: int = 2,
+    seed: int = 42,
+    baseline_config: Optional[PoissonLightGBMConfig] = None,
+) -> Dict[str, Any]:
+    """Optuna TPE search minimizing cross-fold mean RPS for one target (M3).
+
+    Returns a serializable study result including the pre-committed adoption
+    decision: tuned params are adopted only when their cross-fold RPS beats
+    the default config's on the same folds.
+    """
+
+    try:
+        import optuna
+    except ImportError as exc:  # pragma: no cover - exercised without extra
+        raise RuntimeError(
+            "Optuna is required for tuning. Install the "
+            "`football-analytics[tuning]` optional dependencies."
+        ) from exc
+
+    selected_features = _select_available_features(frame, feature_columns)
+    default_config = baseline_config or PoissonLightGBMConfig()
+    baseline_rps = cross_fold_rps(
+        frame,
+        target=target,
+        feature_columns=selected_features,
+        config=default_config,
+        min_train_seasons=min_train_seasons,
+    )
+
+    def objective(trial: "optuna.Trial") -> float:
+        config = PoissonLightGBMConfig(
+            learning_rate=trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
+            num_leaves=trial.suggest_int("num_leaves", 7, 127),
+            min_child_samples=trial.suggest_int("min_child_samples", 5, 200, log=True),
+            feature_fraction=trial.suggest_float("feature_fraction", 0.5, 1.0),
+            bagging_fraction=trial.suggest_float("bagging_fraction", 0.5, 1.0),
+            lambda_l2=trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
+            num_boost_round=_TUNING_NUM_BOOST_ROUND,
+            early_stopping_rounds=default_config.early_stopping_rounds or 50,
+            random_state=default_config.random_state,
+        )
+        return cross_fold_rps(
+            frame,
+            target=target,
+            feature_columns=selected_features,
+            config=config,
+            min_train_seasons=min_train_seasons,
+        )
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=seed),
+    )
+    study.optimize(objective, n_trials=n_trials)
+
+    tuned_rps = float(study.best_value)
+    adopted = bool(np.isfinite(tuned_rps) and tuned_rps < baseline_rps)
+    return {
+        "target": target,
+        "params": dict(study.best_params),
+        "num_boost_round": _TUNING_NUM_BOOST_ROUND,
+        "early_stopping_rounds": default_config.early_stopping_rounds or 50,
+        "cross_fold_rps_tuned": tuned_rps,
+        "cross_fold_rps_default": float(baseline_rps),
+        "n_trials": int(n_trials),
+        "min_train_seasons": int(min_train_seasons),
+        "adopted": adopted,
+    }
+
+
+def config_from_tuning_result(result: Mapping[str, Any]) -> PoissonLightGBMConfig:
+    """Builds a training config from a stored M3 tuning result."""
+
+    params = dict(result.get("params", {}))
+    return PoissonLightGBMConfig(
+        learning_rate=float(params.get("learning_rate", 0.025)),
+        num_leaves=int(params.get("num_leaves", 31)),
+        min_child_samples=int(params.get("min_child_samples", 80)),
+        feature_fraction=float(params.get("feature_fraction", 0.85)),
+        bagging_fraction=float(params.get("bagging_fraction", 0.85)),
+        lambda_l2=float(params.get("lambda_l2", 0.0)),
+        num_boost_round=int(result.get("num_boost_round", 800)),
+        early_stopping_rounds=int(result.get("early_stopping_rounds", 50)),
+    )
+
+
+def load_tuned_configs(directory: "Path | str") -> Dict[str, PoissonLightGBMConfig]:
+    """Loads adopted per-target configs from `config/lgbm_params/<target>.json`.
+
+    Results with ``adopted: false`` are skipped — the M3 adoption gate lives
+    in the stored artifact, so training never has to re-derive it.
+    """
+
+    directory = Path(directory)
+    configs: Dict[str, PoissonLightGBMConfig] = {}
+    if not directory.exists():
+        return configs
+    for path in sorted(directory.glob("*.json")):
+        try:
+            result = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not result.get("adopted"):
+            continue
+        target = result.get("target") or path.stem
+        configs[str(target)] = config_from_tuning_result(result)
+    return configs
 
 
 def run_baseline_reference(

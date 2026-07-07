@@ -20,6 +20,9 @@ modeling = [
     "shap>=0.44.0",
     "matplotlib>=3.8.0",
 ]
+tuning = [
+    "optuna>=3.0.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["football_analytics*"]

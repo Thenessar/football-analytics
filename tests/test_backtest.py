@@ -96,6 +96,70 @@ def test_baseline_reference_scores_both_baselines_per_fold():
     assert logloss["player_l5"] < logloss["posgroup_rate"]
 
 
+def test_cross_fold_rps_prefers_the_informative_config():
+    from football_analytics.ml_training import cross_fold_rps
+
+    frame = _synthetic_seasons()
+    good = cross_fold_rps(
+        frame,
+        target="shots_total",
+        feature_columns=["player_strength"],
+        config=_fast_config(),
+    )
+    # A config that cannot learn (zero boosting rounds is invalid, so use a
+    # single stump round with tiny learning rate) must score worse.
+    weak = cross_fold_rps(
+        frame,
+        target="shots_total",
+        feature_columns=["player_strength"],
+        config=PoissonLightGBMConfig(
+            learning_rate=0.001,
+            num_leaves=2,
+            min_child_samples=200,
+            num_boost_round=1,
+            early_stopping_rounds=0,
+        ),
+    )
+    assert np.isfinite(good) and np.isfinite(weak)
+    assert good < weak
+
+    # Unlearnable target -> inf, so tuners reject the trial.
+    frame["cards_red"] = 0.0
+    assert cross_fold_rps(
+        frame,
+        target="cards_red",
+        feature_columns=["player_strength"],
+        config=_fast_config(),
+    ) == float("inf")
+
+
+def test_load_tuned_configs_applies_the_adoption_gate(tmp_path):
+    import json
+
+    from football_analytics.ml_training import load_tuned_configs
+
+    adopted = {
+        "target": "shots_total",
+        "params": {"learning_rate": 0.1, "num_leaves": 15, "min_child_samples": 20,
+                   "feature_fraction": 0.9, "bagging_fraction": 0.8, "lambda_l2": 0.5},
+        "num_boost_round": 1200,
+        "early_stopping_rounds": 50,
+        "adopted": True,
+    }
+    rejected = {"target": "cards_red", "params": {"learning_rate": 0.2}, "adopted": False}
+    (tmp_path / "shots_total.json").write_text(json.dumps(adopted), encoding="utf-8")
+    (tmp_path / "cards_red.json").write_text(json.dumps(rejected), encoding="utf-8")
+    (tmp_path / "garbage.json").write_text("{not json", encoding="utf-8")
+
+    configs = load_tuned_configs(tmp_path)
+    assert set(configs) == {"shots_total"}
+    assert configs["shots_total"].learning_rate == pytest.approx(0.1)
+    assert configs["shots_total"].num_leaves == 15
+    assert configs["shots_total"].num_boost_round == 1200
+
+    assert load_tuned_configs(tmp_path / "missing") == {}
+
+
 def test_rolling_origin_backtest_skips_unlearnable_targets():
     frame = _synthetic_seasons()
     frame["cards_red"] = 0.0
