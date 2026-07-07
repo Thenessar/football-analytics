@@ -57,13 +57,13 @@ digest).
    identity so the game stays coherent.
 7. **Assists:** team assists `~ Binomial(team goals, assist_per_goal_rate)`,
    allocated by assist intensity. Guarantees `assists <= goals` per team.
-   The default rate (0.72) is provisional — the calibration query below
-   could not run on 2026-07-07 (Databricks free daily quota exhausted);
-   rerun it and update `SimulationConfig.assist_per_goal_rate`:
+   The rate is calibrated to **0.688** (2026-07-07) from all completed
+   fixtures — 68.8% of goals carry a recorded assist:
 
    ```sql
    SELECT sum(coalesce(goals_assists, 0)) / nullif(sum(coalesce(goals_total, 0)), 0)
    FROM football_analytics.silver.stg_football__player_match_stats
+   -- -> 0.6880212282031842
    ```
 8. **Cards:** yellows go through the NB-total + allocation path, clipped at
    2 per player; reds are per-player Bernoulli
@@ -79,6 +79,14 @@ digest).
    total; within-family correlation comes from the shared minutes and the
    structural chains only. Revisit if N6 team-total interval coverage is too
    narrow on 3+ targets.
+
+   Note (2026-07-07): the first production fit found `alpha_team < alpha_player`
+   for every target — the opposite of the intuition below that team totals are
+   "usually more overdispersed". Summing many heterogeneous players toward a
+   team total averages out player-specific dispersion, so team totals sit
+   closer to Poisson. The code uses the measured `alpha_team` regardless, so
+   this is an observation, not a defect; it does mean team-total intervals are
+   tighter than a naive player-dispersion carry-over would predict.
 3. **Starters' minutes are not resampled.** Only bench participation is
    random. Revisit alongside (1) — both need a within-match timeline model.
 4. **Assist allocation does not exclude the goal scorer.** Assists are

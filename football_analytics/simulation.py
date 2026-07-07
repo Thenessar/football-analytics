@@ -55,9 +55,10 @@ class SimulationConfig:
     n_sims: int = 10_000
     seed: int = 7
     thresholds: Tuple[int, ...] = (1, 2, 3)
-    # Empirical share of goals with a recorded assist; provenance query in
-    # ADR 0005 (ticket N3 calibrates the default).
-    assist_per_goal_rate: float = 0.72
+    # Empirical share of goals with a recorded assist, calibrated from
+    # completed international fixtures on 2026-07-07 (0.688; provenance query
+    # in ADR 0005).
+    assist_per_goal_rate: float = 0.688
     max_yellow_per_player: int = 2
     max_red_probability: float = 0.5
 
