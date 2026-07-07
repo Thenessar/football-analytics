@@ -246,10 +246,11 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - **Decision rule (pre-committed):** for each target, if NB `p_ge_1` ECE ≤ 0.02 or the reliability curve shows no systematic direction, keep NB and close this ticket with the evidence. Otherwise implement a hurdle for that target only: LightGBM binary `P(≥1)` (same features, `is_unbalance=true`) + isotonic calibration fitted on a chronologically later slice, count-beyond-1 from the truncated NB. Registered as the same `<prefix>__<target>` name (new version, pyfunc from M2 hides the internals).
   - Whichever way it lands, update the ADR with the measured numbers.
 
-### M5. Feature review from SHAP evidence (optional, small)
+### M5. Feature review from SHAP evidence (optional, small) — ✅ DONE (2026-07-07, static part)
 - **Files:** `football_analytics/ml_training.py` (`DEFAULT_LIGHTGBM_FEATURES`), notes in this doc.
 - **Depends on:** L2 (so removals are re-validated by backtest).
 - **Acceptance criteria:** review the per-target SHAP and gain artifacts from a current training run; propose ≤ 5 removals (dead features) and ≤ 3 additions (candidates: days-since-last-fixture rest proxy, opponent GK quality for `shots_on`→`goals`, team substitution-count tendency for minutes context). Each change must be justified by a backtest delta table in the ticket notes; no-op is an acceptable outcome.
+- **Implementation notes:** a static cross-check of `DEFAULT_LIGHTGBM_FEATURES` against the columns `fct_football__player_event_features` + `add_model_interaction_features` can actually produce found **8 dead entries** (`is_starter`, `was_substitute`, `dribbles_attempts_l5_p90`, `tackles_interceptions_l5_p90`, `game_importance_l5`, `opponent_strength_adjustment`, `defensive_containment_rating`, `opponent_defensive_elo_l10`) — leftovers from the deleted shot-features mart, silently discarded by `_select_available_features` on every run. Removing them is a provably behavior-neutral cleanup (no backtest needed: the selected feature set is unchanged); a regression test pins them out. The SHAP-evidence half (possible additions: rest-days proxy, opponent GK quality, substitution-tendency) needs artifacts from a production training run — carried as an explicit follow-up in O3.
 
 ---
 

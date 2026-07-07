@@ -56,9 +56,7 @@ GOALKEEPER_ONLY_TARGETS = frozenset({"goals_saves"})
 # (§13.4). Minutes enter the model through the exposure offset instead —
 # actual games_minutes at training time, expected_minutes at inference time.
 DEFAULT_LIGHTGBM_FEATURES = [
-    "is_starter",
     "is_starting",
-    "was_substitute",
     "appearances_l5_count",
     "minutes_l5",
     "offsides_l5_p90",
@@ -72,8 +70,6 @@ DEFAULT_LIGHTGBM_FEATURES = [
     "fouls_committed_l5_p90",
     "cards_yellow_l5_p90",
     "cards_red_l5_p90",
-    "dribbles_attempts_l5_p90",
-    "tackles_interceptions_l5_p90",
     "team_possession_l5_avg",
     "opponent_possession_l5_avg",
     "expected_possession_share",
@@ -104,10 +100,6 @@ DEFAULT_LIGHTGBM_FEATURES = [
     "team_lineup_attack_strength",
     "team_lineup_defense_strength",
     "game_importance_scalar",
-    "game_importance_l5",
-    "opponent_strength_adjustment",
-    "defensive_containment_rating",
-    "opponent_defensive_elo_l10",
     "team_elo_general_diff",
     "team_attack_vs_opp_defense",
     "team_defense_vs_opp_attack",

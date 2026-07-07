@@ -444,10 +444,25 @@ def test_default_lightgbm_features_include_persisted_and_derived_elo_features():
         "team_elo_general_diff",
         "player_attack_vs_opp_defense",
         "lineup_attack_delta_vs_team",
-        "opponent_defensive_elo_l10",
     }
 
     assert expected.issubset(set(DEFAULT_LIGHTGBM_FEATURES))
+
+    # M5 cleanup: entries that fct_football__player_event_features can never
+    # produce were removed (they were silently dropped by
+    # _select_available_features anyway — leftovers from the deleted
+    # fct_football__player_shot_features mart).
+    dead_features = {
+        "is_starter",
+        "was_substitute",
+        "dribbles_attempts_l5_p90",
+        "tackles_interceptions_l5_p90",
+        "game_importance_l5",
+        "opponent_strength_adjustment",
+        "defensive_containment_rating",
+        "opponent_defensive_elo_l10",
+    }
+    assert not dead_features & set(DEFAULT_LIGHTGBM_FEATURES)
 
 
 def test_log_model_kwargs_include_signature_and_support_mlflow_versions():
