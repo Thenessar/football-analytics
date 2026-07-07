@@ -10,6 +10,13 @@ unit_tests:
       starters to starter_minutes_prior (85), bench players to
       bench_participation_prior * bench_cameo_minutes_prior (0.5 * 25 = 12.5).
     model: fct_football__player_expected_minutes
+    # Pin the priors so expectations stay float-exact when the production
+    # vars are recalibrated (ADR 0004).
+    overrides:
+      vars:
+        starter_minutes_prior: 85.0
+        bench_participation_prior: 0.5
+        bench_cameo_minutes_prior: 25.0
     given:
       - input: ref('stg_football__fixtures')
         rows:
@@ -44,6 +51,11 @@ unit_tests:
       give p_plays = (2 + 4*0.5) / (4 + 4) = 0.5 and if_plays =
       (2*30 + 2*25) / 4 = 27.5, so expected = 13.75.
     model: fct_football__player_expected_minutes
+    overrides:
+      vars:
+        starter_minutes_prior: 85.0
+        bench_participation_prior: 0.5
+        bench_cameo_minutes_prior: 25.0
     given:
       - input: ref('stg_football__fixtures')
         rows:

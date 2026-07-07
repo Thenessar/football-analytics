@@ -132,12 +132,13 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - Bounds test still enforces [0, 120] and `p_plays` ∈ [0, 1].
 - **Implementation notes:** second unit test `expected_minutes_conditions_on_confirmed_role` covers the three defect scenarios with float-exact expectations (12.5 / 85.0 / 13.75); the red-card case landed in K1's rewritten first test (3-start history so the shrunk result is exactly 88.0). One unused-sub row uses `games_minutes: null` to pin the coalesce-to-0 path. Bounds extensions landed in K1.
 
-### K3. Calibrate the priors from production history + supersede ADR 0002
+### K3. Calibrate the priors from production history + supersede ADR 0002 — ✅ DONE (2026-07-07)
 - **Files:** `dbt/dbt_project.yml` (var values), `docs/adr/0002-expected-minutes-estimator.md` (mark Superseded), new `docs/adr/0004-expected-minutes-role-conditional.md`.
 - **Depends on:** K1. **Requires Databricks access** (use `scripts/run_query.py`).
 - **Acceptance criteria:**
   - One SQL query (recorded in the ADR) computes from all completed fixtures: global bench-appearance rate (`P(minutes ≥ 1 | named on bench)`), mean nonzero bench minutes, and mean starter minutes. Update the three dbt vars to the measured values (rounded).
   - ADR 0004 records the estimator, priors + provenance query, shrinkage constants, and the deferred ML-model alternative with its adoption trigger (see K4).
+- **Implementation notes:** measured over n=90,470 completed player rows via `scripts/run_query.py`: starter mean 80.41', bench participation 0.3952, bench cameo mean 22.97' → vars set to 80.0 / 0.4 / 23.0 (all three provisional values were too generous). Unit tests pin their own priors via dbt unit-test `overrides.vars`, so recalibration never breaks float-exact expectations. ADR 0002 marked superseded.
 
 ### K4. Expected-minutes accuracy monitoring + estimator evaluation harness
 - **Files:** new `dbt/models/marts/mon_football__expected_minutes_accuracy.sql` (+ schema.yml), optionally a small helper in `football_analytics/`.

@@ -1,6 +1,6 @@
 # ADR 0002: Expected Minutes Estimator
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0004 (role-conditional estimator, 2026-07-07)
 - **Date:** 2026-07-06
 - **Relates to:** business_logic.md §12.2/§12.3; implementation_backlog.md tickets E1/E2
 
