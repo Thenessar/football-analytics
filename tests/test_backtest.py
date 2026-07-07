@@ -74,6 +74,28 @@ def test_rolling_origin_backtest_scores_each_fold_with_the_metric_suite():
     assert result["skipped"].empty
 
 
+def test_baseline_reference_scores_both_baselines_per_fold():
+    from football_analytics.ml_training import run_baseline_reference
+
+    frame = _synthetic_seasons()
+    result = run_baseline_reference(
+        frame,
+        target_columns=["shots_total"],
+        min_train_seasons=2,
+    )
+
+    report = result["report"]
+    assert set(report["baseline"]) == {"posgroup_rate", "player_l5"}
+    assert set(report["season"]) == {2023, 2024}
+    assert {"poisson_logloss", "rps", "dispersion_index"}.issubset(set(report["metric"]))
+
+    # The player-L5 baseline tracks the true per-player rate, so it must beat
+    # the position-group rate baseline on log loss in this synthetic world.
+    summary = result["summary"]
+    logloss = summary[summary["metric"] == "poisson_logloss"].set_index("baseline")["mean"]
+    assert logloss["player_l5"] < logloss["posgroup_rate"]
+
+
 def test_rolling_origin_backtest_skips_unlearnable_targets():
     frame = _synthetic_seasons()
     frame["cards_red"] = 0.0

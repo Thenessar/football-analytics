@@ -191,10 +191,11 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - `evaluate_count_predictions` remains backward-compatible (existing keys unchanged).
 - **Implementation notes:** training logs the full `validation_metric_suite` scalar set (11 per target — the 8 required plus `brier_ge_2`/`ece_ge_2`/`top3_hit_rate`; non-finite values skipped). Reliability tables land as `{target}_reliability_ge_{k}.csv` and the extended per-position-group breakdown (basic + rps + dispersion) as `{target}_position_group_metrics.csv` under `model_artifacts/`. Suite also returned in `result["metrics"][target]["validation_suite"]`. Integration test (`tests/test_ml_training_metrics.py`) runs real training against a local sqlite MLflow store (MLflow 3.x refuses the legacy file store) and asserts metrics + artifacts exist.
 
-### L4. Baseline-only reference run mode
+### L4. Baseline-only reference run mode — ✅ DONE (2026-07-07)
 - **Files:** `scripts/train_poisson_lgbm.py` (`--baselines-only` flag), `football_analytics/evaluation.py`.
 - **Depends on:** L1, L2.
 - **Acceptance criteria:** a mode that scores the two naive baselines through the identical fold harness and logs them under run name `baseline-reference`, so every model run's skill scores have an inspectable denominator run. No model training, no registration.
+- **Implementation notes:** `run_baseline_reference` in `ml_training.py` (lightgbm never imported on this path). Test asserts the player-L5 baseline beats the position-group baseline on synthetic data where per-player rates are the true signal — a sanity check that the two baselines are genuinely different reference points.
 
 ### L5. Extend prediction monitoring with calibration & ranking views
 - **Files:** `dbt/models/marts/mon_football__prediction_monitoring.sql` (extend) or new `mon_football__prediction_calibration.sql` (+ schema.yml).

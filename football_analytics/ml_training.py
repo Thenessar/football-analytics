@@ -897,6 +897,85 @@ def run_rolling_origin_backtest(
     }
 
 
+def run_baseline_reference(
+    frame: pd.DataFrame,
+    *,
+    target_columns: Sequence[str] = DEFAULT_TARGET_COLUMNS,
+    exposure_column: str = "games_minutes",
+    season_column: str = "league_season",
+    min_train_seasons: int = 2,
+) -> Dict[str, pd.DataFrame]:
+    """Scores the naive baselines through the L2 fold harness (backlog L4).
+
+    No models are trained: per fold and target the position-group per-90 rate
+    baseline and the player-L5 baseline are evaluated with the same metrics
+    as model runs, so every skill score has an inspectable denominator run.
+    Returns ``report`` (season/target/baseline/metric/value) and ``summary``
+    (target/baseline/metric mean+std across folds).
+    """
+
+    from football_analytics.evaluation import (
+        dispersion_index,
+        player_l5_baseline_means,
+        position_group_baseline_means,
+        position_group_rates,
+        ranked_probability_score,
+        rolling_origin_folds,
+    )
+
+    report_rows: list[Dict[str, Any]] = []
+    for season, train_df, valid_df in rolling_origin_folds(
+        frame, season_column=season_column, min_train_seasons=min_train_seasons
+    ):
+        for target in target_columns:
+            target_train = filter_rows_for_target(train_df, target)
+            target_valid = filter_rows_for_target(valid_df, target)
+            if target_train.empty or target_valid.empty:
+                continue
+            y_train = pd.to_numeric(target_train[target], errors="coerce").fillna(0.0).to_numpy()
+            if y_train.sum() <= 0:
+                continue
+            y_valid = pd.to_numeric(target_valid[target], errors="coerce").fillna(0.0).to_numpy()
+            train_exposure = exposure_from_minutes(target_train[exposure_column])
+            valid_exposure = exposure_from_minutes(target_valid[exposure_column])
+
+            rates = position_group_rates(target_train, target, exposure=train_exposure)
+            posgroup_mu = position_group_baseline_means(
+                target_valid, rates, exposure=valid_exposure
+            )
+            player_mu = player_l5_baseline_means(
+                target_valid, target, exposure=valid_exposure, fallback_means=posgroup_mu
+            )
+            for baseline_name, mu in (
+                ("posgroup_rate", posgroup_mu),
+                ("player_l5", player_mu),
+            ):
+                metrics = dict(evaluate_count_predictions(y_valid, mu))
+                metrics["rps"] = ranked_probability_score(y_valid, mu)
+                metrics["dispersion_index"] = dispersion_index(y_valid, mu)
+                for metric_name, metric_value in metrics.items():
+                    report_rows.append({
+                        "season": season,
+                        "target": target,
+                        "baseline": baseline_name,
+                        "metric": metric_name,
+                        "value": float(metric_value),
+                    })
+
+    report = pd.DataFrame(
+        report_rows, columns=["season", "target", "baseline", "metric", "value"]
+    )
+    if report.empty:
+        summary = pd.DataFrame(columns=["target", "baseline", "metric", "mean", "std", "folds"])
+    else:
+        summary = (
+            report.groupby(["target", "baseline", "metric"])["value"]
+            .agg(mean="mean", std="std", folds="count")
+            .reset_index()
+        )
+    return {"report": report, "summary": summary}
+
+
 def temporal_train_validation_split(
     frame: pd.DataFrame,
     *,

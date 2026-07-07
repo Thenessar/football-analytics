@@ -22,6 +22,7 @@ from football_analytics.ml_training import (
     DEFAULT_TARGET_COLUMNS,
     PoissonLightGBMConfig,
     add_model_interaction_features,
+    run_baseline_reference,
     run_rolling_origin_backtest,
     season_train_validation_split,
     temporal_train_validation_split,
@@ -163,7 +164,52 @@ def parse_args() -> argparse.Namespace:
         default=2,
         help="Backtest mode: earliest validation season must have this many prior seasons.",
     )
+    parser.add_argument(
+        "--baselines-only",
+        action="store_true",
+        help=(
+            "Score the naive baselines (position-group rate, player L5) "
+            "through the fold harness under run name 'baseline-reference'; "
+            "trains and registers nothing (ml_upgrade_backlog.md L4)."
+        ),
+    )
     return parser.parse_args()
+
+
+def run_baselines_only_mode(args: "argparse.Namespace", training_frame: pd.DataFrame) -> None:
+    """L4: log the skill-score denominators as an inspectable MLflow run."""
+
+    import tempfile
+    from pathlib import Path
+
+    import mlflow
+
+    try:
+        mlflow.autolog(disable=True)
+    except Exception:
+        pass
+
+    result = run_baseline_reference(
+        training_frame,
+        target_columns=_parse_csv(args.targets) or DEFAULT_TARGET_COLUMNS,
+        min_train_seasons=args.min_train_seasons,
+    )
+
+    if args.experiment_name:
+        mlflow.set_experiment(args.experiment_name)
+    with mlflow.start_run(run_name="baseline-reference"):
+        mlflow.log_param("mode", "baseline_reference")
+        mlflow.log_param("min_train_seasons", args.min_train_seasons)
+        mlflow.log_param("feature_table", args.feature_table)
+        for row in result["summary"].itertuples():
+            mlflow.log_metric(f"{row.target}_{row.baseline}_{row.metric}_mean", row.mean)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir)
+            result["report"].to_csv(artifact_dir / "baseline_report.csv", index=False)
+            result["summary"].to_csv(artifact_dir / "baseline_summary.csv", index=False)
+            mlflow.log_artifacts(str(artifact_dir), artifact_path="baselines")
+
+    print(result["summary"].to_string(index=False))
 
 
 def run_backtest_mode(args: "argparse.Namespace", training_frame: pd.DataFrame, config: PoissonLightGBMConfig) -> None:
@@ -237,6 +283,10 @@ def main() -> None:
 
     feature_frame = spark.table(args.feature_table).toPandas()
     training_frame = build_training_feature_frame(feature_frame)
+
+    if args.baselines_only:
+        run_baselines_only_mode(args, training_frame)
+        return
 
     if args.backtest:
         config = PoissonLightGBMConfig(
