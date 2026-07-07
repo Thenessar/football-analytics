@@ -117,6 +117,13 @@ models:
       and the segment's date range. Dashboarding on top is a follow-up; this
       view is the queryable check required by backlog I2.
 
+  - name: mon_football__simulation_vs_actual
+    description: >
+      Active player-level simulation rows joined to realized labels after
+      completion: bias, MAE, 5-95% interval hit rate, and P(>=1) calibration
+      inputs per league_season / target_event / position_group /
+      engine_version. Feeds the ADR 0005 revisit triggers.
+
   - name: mon_football__prediction_calibration
     description: >
       Production calibration curves: predicted P(>=1)/P(>=2) versus empirical

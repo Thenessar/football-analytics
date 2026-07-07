@@ -327,10 +327,11 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
 
 ## Epic O (part 2) — Final Hygiene
 
-### O2. Simulation monitoring view
+### O2. Simulation monitoring view — ✅ DONE (2026-07-07)
 - **Files:** new `dbt/models/marts/mon_football__simulation_vs_actual.sql` (+ schema.yml).
 - **Depends on:** N4.
 - **Acceptance criteria:** view joining active simulation rows to realized labels after completion: per target — sim_mean MAE, interval-hit flags (actual within [p05,p95]), and P(≥1) calibration inputs; segmented by target × position_group × engine_version. Empty-but-queryable convention.
+- **Implementation notes:** committed ahead of N7 so the business_logic.md monitoring list stays truthful per-commit. Position group comes from the feature-mart labels (the sim table's copy may lag lineup corrections); interval hit uses the stored p05/p95 columns directly.
 
 ### O3. Backlog close-out review
 - **Depends on:** everything above.
