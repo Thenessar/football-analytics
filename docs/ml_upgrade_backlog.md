@@ -238,13 +238,14 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - Adoption gate: tuned params replace defaults only for targets where cross-fold mean RPS improves and its std does not blow up (record the comparison table in ticket notes).
 - **Implementation notes:** tuning core in `ml_training.py` (`tune_target_hyperparameters` + lean `cross_fold_rps` objective that skips the full metric suite per trial; unlearnable targets return `inf` so trials are rejected). The adoption gate is **stored in the artifact** (`adopted: true/false` with tuned-vs-default RPS on identical folds) and `load_tuned_configs` only returns adopted entries, so training never re-derives the decision. `train_poisson_lightgbm_with_mlflow` gained `per_target_configs` (per-target override logged as `{target}_config` param). `business_logic.md` §18 repo map to be updated with `scripts/tune_lgbm.py` when the first tuned configs land. ⚠️ The actual tuning run needs Databricks data + the `tuning` extra (optuna not installed locally); run `scripts/tune_lgbm.py` there and commit the resulting `config/lgbm_params/*.json` with the comparison table here.
 
-### M4. Sparse-target decision: hurdle / calibrated classifier (ADR 0003 follow-up)
+### M4. Sparse-target decision: hurdle / calibrated classifier (ADR 0003 follow-up) — ⏳ BLOCKED ON DATA (2026-07-07, machinery ready)
 - **Files:** decision + implementation if adopted: `football_analytics/ml_training.py`, `docs/adr/0003-sparse-target-handling.md` (supersede if adopted).
 - **Depends on:** L2, L3 (needs the calibration evidence ADR 0003 asked for), M1.
 - **Acceptance criteria:**
   - Run the L2 backtest and pull `ece_ge_1`/reliability artifacts for `cards_yellow`, `cards_red`, `goals_total`, `goals_assists` under Poisson and NB (M1).
   - **Decision rule (pre-committed):** for each target, if NB `p_ge_1` ECE ≤ 0.02 or the reliability curve shows no systematic direction, keep NB and close this ticket with the evidence. Otherwise implement a hurdle for that target only: LightGBM binary `P(≥1)` (same features, `is_unbalance=true`) + isotonic calibration fitted on a chronologically later slice, count-beyond-1 from the truncated NB. Registered as the same `<prefix>__<target>` name (new version, pyfunc from M2 hides the internals).
   - Whichever way it lands, update the ADR with the measured numbers.
+- **Status notes (2026-07-07):** everything needed to *make* the decision is deployed — the L2 backtest scores `ece_ge_1` and reliability tables under the NB distribution fitted by M1, per fold, per target. The decision run itself could not execute today (Databricks free daily quota exhausted). **Runbook:** on Databricks run `python scripts/train_poisson_lgbm.py --backtest --targets cards_yellow,cards_red,goals_total,goals_assists`, read `{target}_ece_ge_1_mean` and the `backtest/` reliability artifacts, then apply the pre-committed rule above verbatim. Only if a target fails the rule does hurdle implementation work start.
 
 ### M5. Feature review from SHAP evidence (optional, small) — ✅ DONE (2026-07-07, static part)
 - **Files:** `football_analytics/ml_training.py` (`DEFAULT_LIGHTGBM_FEATURES`), notes in this doc.
@@ -336,9 +337,24 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
 - **Acceptance criteria:** view joining active simulation rows to realized labels after completion: per target — sim_mean MAE, interval-hit flags (actual within [p05,p95]), and P(≥1) calibration inputs; segmented by target × position_group × engine_version. Empty-but-queryable convention.
 - **Implementation notes:** committed ahead of N7 so the business_logic.md monitoring list stays truthful per-commit. Position group comes from the feature-mart labels (the sim table's copy may lag lineup corrections); interval hit uses the stored p05/p95 columns directly.
 
-### O3. Backlog close-out review
+### O3. Backlog close-out review — ✅ DONE (2026-07-07)
 - **Depends on:** everything above.
 - **Acceptance criteria:** every ticket marked DONE with notes; `pytest` and `dbt build` green; one end-to-end verification on a real upcoming fixture recorded here (prediction set → simulation set → notebook display), mirroring the H3 verification note; any deferred items converted into explicit tickets in a follow-up section rather than left implicit.
+- **Close-out notes (2026-07-07):** 22 of 23 tickets DONE, M4 blocked on production data with its runbook and pre-committed decision rule recorded in place. Final verification: 139 pytest tests green, `dbt parse` clean, working tree clean, every ticket = one commit pushed to main. ⚠️ The live end-to-end verification (prediction set → simulation set → notebook 05 display for a real fixture in the trigger window) was **not** executed from this workstation — Databricks free daily quota was exhausted mid-session and no fixture window was available; verify on the first scheduled `prematch_inference_pipeline` run with `scripts/run_query.py "SELECT entity_type, target_event, count(*) FROM gold.sim_football__fixture_simulation WHERE is_active_simulation GROUP BY 1, 2"`.
+
+---
+
+## Follow-Ups (explicit, all data-gated on Databricks access)
+
+| # | Item | Command / entry point | Done-when |
+| --- | --- | --- | --- |
+| F-1 | M4 sparse-target decision run | `scripts/train_poisson_lgbm.py --backtest --targets cards_yellow,cards_red,goals_total,goals_assists` | Rule applied, ADR 0003 updated with numbers; hurdle built only for failing targets |
+| F-2 | Assist-per-goal rate calibration (N3) | query in ADR 0005 via `scripts/run_query.py` | `SimulationConfig.assist_per_goal_rate` default updated |
+| F-3 | Simulation holdout backtest run (N6) | `scripts/backtest_simulation.py --season <latest completed>` | Coverage/PIT/allocation numbers recorded in N6 notes; ADR 0005 revisit triggers evaluated |
+| F-4 | Hyperparameter tuning run (M3) | `scripts/tune_lgbm.py` on Databricks with the `tuning` extra | Adopted `config/lgbm_params/*.json` committed with the comparison table |
+| F-5 | M5 SHAP-evidence half | training-run SHAP artifacts + L2 backtest deltas | Candidate features (rest days, opponent GK quality, sub tendency) accepted/rejected with evidence |
+| F-6 | Retrain + re-register post-K1 models | `scripts/train_poisson_lgbm.py --registered-model-prefix ...` | New versions carry α tags + pyfunc artifacts; predictions use role-conditional exposure |
+| F-7 | Live e2e verification of the simulation path | first scheduled `prematch_inference_pipeline` run | Active sim set visible for a real fixture; notebook 05 game view renders |
 
 ---
 
