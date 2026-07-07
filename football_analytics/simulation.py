@@ -247,3 +247,85 @@ def sample_minutes(
         rng.random((len(players), config.n_sims)) < p_plays,
     )
     return participation * if_plays
+
+
+def sample_nb_totals(
+    rng: np.random.Generator,
+    means: np.ndarray,
+    alpha: float = 0.0,
+) -> np.ndarray:
+    """Team totals from NB(mean, Var = mean + alpha*mean^2) per simulation.
+
+    Realized as the Poisson–Gamma mixture (rate ~ Gamma(1/alpha, alpha*mean),
+    total ~ Poisson(rate)); alpha = 0 degenerates to a plain Poisson draw.
+    """
+
+    means = np.clip(np.asarray(means, dtype=float), 0.0, None)
+    if alpha and alpha > 0.0:
+        rates = rng.gamma(1.0 / alpha, alpha * means)
+        return rng.poisson(rates).astype(np.int64)
+    return rng.poisson(means).astype(np.int64)
+
+
+def multinomial_allocate(
+    rng: np.random.Generator,
+    totals: np.ndarray,
+    weights: np.ndarray,
+) -> np.ndarray:
+    """Exact multinomial split of ``totals`` (sims,) by ``weights`` (P, sims).
+
+    Sequential conditional binomials with suffix-sum denominators — the
+    textbook decomposition of a multinomial — vectorized across simulations
+    and independent of numpy's batched-multinomial support. Columns whose
+    weights are all zero keep their counts unallocated only if the caller
+    passed a positive total with no weight anywhere; ``allocate_event_totals``
+    pre-repairs that case, so here the last positive-weight player absorbs
+    the exact remainder (its conditional ratio is exactly 1.0).
+    """
+
+    weights = np.clip(np.asarray(weights, dtype=float), 0.0, None)
+    n_players, n_sims = weights.shape
+    suffix = np.cumsum(weights[::-1], axis=0)[::-1]
+    remaining = np.asarray(totals, dtype=np.int64).copy()
+    out = np.zeros((n_players, n_sims), dtype=np.int64)
+    for index in range(n_players - 1):
+        denominator = suffix[index]
+        ratio = np.divide(
+            weights[index],
+            denominator,
+            out=np.zeros(n_sims, dtype=float),
+            where=denominator > 0.0,
+        )
+        draw = rng.binomial(remaining, np.clip(ratio, 0.0, 1.0))
+        out[index] = draw
+        remaining -= draw
+    out[n_players - 1] = remaining
+    return out
+
+
+def allocate_event_totals(
+    rng: np.random.Generator,
+    totals: np.ndarray,
+    weights: np.ndarray,
+    on_pitch: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Multinomial allocation with the degenerate-weight edges repaired.
+
+    Simulations where the total is positive but every weight is zero fall
+    back to a uniform split across ``on_pitch`` players; if nobody is on the
+    pitch the total itself is forced to zero (you cannot record events with
+    no players). Returns ``(counts, repaired_totals)``.
+    """
+
+    weights = np.clip(np.asarray(weights, dtype=float), 0.0, None)
+    totals = np.asarray(totals, dtype=np.int64).copy()
+    weight_sums = weights.sum(axis=0)
+    degenerate = (weight_sums <= 0.0) & (totals > 0)
+    if degenerate.any():
+        pitch_counts = on_pitch.sum(axis=0)
+        repairable = degenerate & (pitch_counts > 0)
+        if repairable.any():
+            weights = weights.copy()
+            weights[:, repairable] = on_pitch[:, repairable].astype(float)
+        totals[degenerate & (pitch_counts == 0)] = 0
+    return multinomial_allocate(rng, totals, weights), totals

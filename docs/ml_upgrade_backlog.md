@@ -268,13 +268,14 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
 - **Acceptance criteria:** module imports without Spark/MLflow; deterministic under seed; input validation errors are specific (missing target, <11 starters, zero exposure).
 - **Implementation notes:** `SimulationInputs.players` carries one `rate90_<target>` column per target, recovered from `predicted_mean / (expected_minutes/90)` — round-trip verified for bench players (blended mean ÷ blended exposure = clean per-90 rate). Pre-K5 prediction rows degrade to deterministic minutes (`p_plays=1`, `if_plays=expected_minutes`). `alpha_team` arrives as a plain dict (read from M1 version tags by the notebook) so the module stays MLflow-free. ADR 0005 records the full sampling design and six v1 simplifications with revisit triggers, including one added during implementation: assist allocation does not exclude the goal scorer (team invariants unaffected).
 
-### N2. Team totals + multinomial allocation
+### N2. Team totals + multinomial allocation — ✅ DONE (2026-07-07)
 - **Files:** `football_analytics/simulation.py`, `tests/test_simulation.py`.
 - **Depends on:** N1.
 - **Required behavior:**
   - Per team, per independent event family (`shots_total`, `passes_total`, `offsides`, `fouls_committed` [see N3 mirror], `cards_yellow`): team total `T[s] ~ NB(mean = Σ_p λ_p·m[p,s]/90, alpha_team)`; NB sampled as Poisson–Gamma mixture (`rate ~ Gamma(1/α, α·mean)` when α>0, else Poisson) — vectorized.
   - Allocation: `counts[·, s] ~ Multinomial(T[s], w)` with `w_p ∝ λ_p·m[p,s]/90`. Edge cases (unit-tested): total > 0 with all-zero weights → uniform over players with `m > 0`; total = 0 → zeros; single-player teams rejected upstream.
   - Mean preservation: across sims, `mean(counts_p) ≈ λ_p·E[m_p]/90` within 2% for a 50k-sim test.
+- **Implementation notes:** multinomial realized as sequential conditional binomials with suffix-sum denominators (exact decomposition, vectorized across sims, no batched-multinomial numpy requirement; the last positive-weight player's conditional ratio is exactly 1.0 by float identity, so remainders never leak). `allocate_event_totals` repairs the two degenerate edges before allocation and returns repaired totals so downstream team sums stay consistent. NB totals verified against the analytic variance `M + αM²` at 60k draws; conservation asserted exactly (`Σ_p counts == totals` per sim).
 
 ### N3. Structural coherence chains
 - **Files:** `football_analytics/simulation.py`, `tests/test_simulation.py`.

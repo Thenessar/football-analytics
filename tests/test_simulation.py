@@ -8,9 +8,12 @@ from football_analytics.simulation import (
     ALL_SIMULATION_TARGETS,
     SimulationConfig,
     SimulationInputError,
+    allocate_event_totals,
     build_simulation_inputs,
     deterministic_sim_set_id,
+    multinomial_allocate,
     sample_minutes,
+    sample_nb_totals,
 )
 
 
@@ -140,6 +143,57 @@ def test_sim_set_id_deterministic_and_config_sensitive():
         100, prediction_set_id="p2", config=config
     )
     assert other_set != first
+
+
+def test_nb_totals_match_target_mean_and_variance():
+    rng = np.random.default_rng(31)
+    means = np.full(60000, 12.0)
+    alpha = 0.15
+
+    totals = np.asarray(sample_nb_totals(rng, means, alpha), dtype=float)
+    assert totals.mean() == pytest.approx(12.0, rel=0.02)
+    expected_var = 12.0 + alpha * 12.0 ** 2
+    assert totals.var() == pytest.approx(expected_var, rel=0.05)
+
+    poisson_totals = np.asarray(
+        sample_nb_totals(np.random.default_rng(32), means, 0.0), dtype=float
+    )
+    assert poisson_totals.var() == pytest.approx(12.0, rel=0.05)
+
+
+def test_multinomial_allocation_conserves_totals_and_preserves_means():
+    rng = np.random.default_rng(33)
+    n_sims = 50000
+    totals = rng.poisson(10.0, size=n_sims)
+    weights = np.tile(np.array([[4.0], [3.0], [2.0], [1.0]]), (1, n_sims))
+
+    counts = multinomial_allocate(rng, totals, weights)
+
+    # Conservation: every simulation's counts add to its total exactly.
+    np.testing.assert_array_equal(counts.sum(axis=0), totals)
+    # Mean preservation: E[count_p] = E[T] * w_p / sum(w).
+    shares = counts.mean(axis=1) / 10.0
+    assert shares == pytest.approx([0.4, 0.3, 0.2, 0.1], abs=0.01)
+
+
+def test_allocation_repairs_zero_weight_and_empty_pitch_edges():
+    rng = np.random.default_rng(34)
+    totals = np.array([6, 6], dtype=np.int64)
+    weights = np.zeros((3, 2))
+    on_pitch = np.array([
+        [True, False],
+        [True, False],
+        [False, False],
+    ])
+
+    counts, repaired = allocate_event_totals(rng, totals, weights, on_pitch)
+
+    # Sim 0: zero weights but two players on pitch -> uniform split of 6.
+    assert counts[:, 0].sum() == 6
+    assert counts[2, 0] == 0
+    # Sim 1: nobody on pitch -> the total itself is forced to zero.
+    assert repaired[1] == 0
+    assert counts[:, 1].sum() == 0
 
 
 def test_minutes_sampling_is_seeded_and_matches_p_plays():
