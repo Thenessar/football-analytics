@@ -86,13 +86,14 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
 
 ## Epic O (part 1) — Repo Hygiene Blocker
 
-### O1. Track `docs/business_logic.md`; ignore `dbt/.user.yml`; delete stale notebook
+### O1. Track `docs/business_logic.md`; ignore `dbt/.user.yml`; delete stale notebook — ✅ DONE (2026-07-07)
 - **Files:** `.gitignore`, `docs/business_logic.md` (currently untracked!), `multi_player_predictions.ipynb` (delete).
 - **Depends on:** nothing. **Do this first** — every other ticket cites `business_logic.md`, and agents working from a fresh clone will not have it while it stays untracked.
 - **Acceptance criteria:**
   - `docs/business_logic.md` committed as-is.
   - `dbt/.user.yml` added to `.gitignore` (dbt-generated local user id; never commit).
   - `multi_player_predictions.ipynb` deleted: it reads the deleted `fct_football__player_shot_features` mart and `player_prop_poisson_lgbm_*` model names (superseded by F3 naming), so it cannot run; its use case is replaced by notebook 04 output and Epic N's notebook 05. Verify with grep that nothing references it.
+- **Implementation notes:** grep confirmed the only reference to the notebook was this backlog. `.gitignore` gained `dbt/.user.yml` under a dedicated comment; `.databricks/` was already ignored. `business_logic.md` committed unmodified.
 
 ---
 

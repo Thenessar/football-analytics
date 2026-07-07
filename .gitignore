@@ -97,3 +97,6 @@ output/
 
 # Local profiles config
 dbt/profiles.yml
+
+# dbt-generated local user id
+dbt/.user.yml
