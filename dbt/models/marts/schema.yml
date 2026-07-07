@@ -169,12 +169,17 @@ models:
 
   - name: fct_football__player_expected_minutes
     description: >
-      Pre-match expected minutes for players named in a fixture lineup
-      (starters and substitutes), one row per fixture/team/player. The
-      estimate uses only appearances strictly prior to the fixture, so it is
-      computable at inference time before kickoff. Estimator choice and the
-      candidates deferred as future work are recorded in
-      docs/adr/0002-expected-minutes-estimator.md.
+      Role-conditional pre-match expected minutes for players named in a
+      fixture lineup (starters and substitutes), one row per
+      fixture/team/player: expected_minutes = p_plays *
+      expected_minutes_if_plays, conditioned on the player's role in TODAY'S
+      confirmed lineup. Starters draw on their last 5 prior starts; bench
+      players on their last 10 prior bench namings (unused-sub namings count
+      as 0-minute observations). All history is strictly prior to the
+      fixture, so the value is computable at inference time before kickoff.
+      Estimator rationale and prior provenance are recorded in
+      docs/adr/0004-expected-minutes-role-conditional.md (supersedes ADR
+      0002).
     tests:
       - unique_combination_of_columns:
           arguments:
@@ -209,17 +214,29 @@ models:
               arguments:
                 values: ['G', 'D', 'M', 'F']
       - name: expected_minutes
-        description: Expected minutes for the fixture, clamped to [0, 120].
+        description: Expected minutes for the fixture (p_plays * expected_minutes_if_plays), clamped to [0, 120].
+        tests:
+          - not_null
+      - name: p_plays
+        description: Probability the player gets on the pitch. Always 1.0 for confirmed starters; shrunk empirical bench-participation rate for bench players.
+        tests:
+          - not_null
+      - name: expected_minutes_if_plays
+        description: Expected minutes conditional on playing, from role-matched history shrunk toward the role prior, clamped to [0, 120]. The simulation layer consumes this together with p_plays.
         tests:
           - not_null
       - name: expected_minutes_method
-        description: "Which estimator produced the value: l5_trimmed_mean (>=3 prior appearances), l5_plain_average (1-2), or role_prior (none: starter 85 / substitute 15)."
+        description: "Which estimator branch produced the value: starter_l5_trimmed_shrunk (>=3 prior starts), starter_low_history_shrunk (1-2), starter_prior (0), bench_l10_shrunk (>=3 prior bench namings), bench_low_history_shrunk (1-2), bench_prior (0)."
         tests:
           - accepted_values:
               arguments:
-                values: ['l5_trimmed_mean', 'l5_plain_average', 'role_prior']
+                values: ['starter_l5_trimmed_shrunk', 'starter_low_history_shrunk', 'starter_prior', 'bench_l10_shrunk', 'bench_low_history_shrunk', 'bench_prior']
       - name: prior_appearance_count
-        description: Number of prior played appearances (max 5) available to the estimator.
+        description: History depth backing the active branch (prior starts for starters, prior bench namings for bench players).
+      - name: starts_in_history_count
+        description: Prior starts available to the estimator (max 5).
+      - name: bench_namings_in_history_count
+        description: Prior bench namings available to the estimator (max 10), including unused-sub namings.
 
   - name: fct_football__player_match_features
     description: Canonical gold player-fixture feature mart for data science. One row represents one player for one team in one fixture, with player statistics, match context, lineup context, engineered per-90 metrics, rate metrics, and modeling flags.

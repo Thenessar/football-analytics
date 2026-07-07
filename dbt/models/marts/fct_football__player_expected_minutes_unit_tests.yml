@@ -3,10 +3,12 @@ version: 2
 unit_tests:
   - name: expected_minutes_trims_red_card_outlier_and_applies_role_priors
     description: >
-      Regression for the trimmed-mean estimator: a red-card-shortened 25-minute
-      appearance among four 90-minute appearances must be trimmed away
-      (expected 90, not 77). Players without history fall back to the role
-      prior (starter 85, substitute 15).
+      v2 estimator regression: a red-card-shortened 25-minute start among two
+      90-minute starts must be trimmed away before shrinkage, giving
+      (3*90 + 2*85) / 5 = 88 (an untrimmed mean of 68.33 would shrink to 75).
+      Players without role history fall back to the shrunk role priors:
+      starters to starter_minutes_prior (85), bench players to
+      bench_participation_prior * bench_cameo_minutes_prior (0.5 * 25 = 12.5).
     model: fct_football__player_expected_minutes
     given:
       - input: ref('stg_football__fixtures')
@@ -14,8 +16,6 @@ unit_tests:
           - {fixture_id: 1, fixture_date_utc: "2026-06-01 18:00:00"}
           - {fixture_id: 2, fixture_date_utc: "2026-06-05 18:00:00"}
           - {fixture_id: 3, fixture_date_utc: "2026-06-09 18:00:00"}
-          - {fixture_id: 4, fixture_date_utc: "2026-06-13 18:00:00"}
-          - {fixture_id: 5, fixture_date_utc: "2026-06-17 18:00:00"}
           - {fixture_id: 6, fixture_date_utc: "2026-06-21 18:00:00"}
       - input: ref('stg_football__lineups')
         rows:
@@ -24,13 +24,11 @@ unit_tests:
           - {fixture_id: 6, team_id: 1, team_name: "Argentina", player_id: 9, player_name: "Debut Substitute", position: "F", is_starting: false, formation: "4-3-3"}
       - input: ref('stg_football__player_match_stats')
         rows:
-          - {fixture_id: 1, team_id: 1, player_id: 7, games_minutes: 90}
-          - {fixture_id: 2, team_id: 1, player_id: 7, games_minutes: 90}
-          - {fixture_id: 3, team_id: 1, player_id: 7, games_minutes: 90}
-          - {fixture_id: 4, team_id: 1, player_id: 7, games_minutes: 25}
-          - {fixture_id: 5, team_id: 1, player_id: 7, games_minutes: 90}
+          - {fixture_id: 1, team_id: 1, player_id: 7, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 2, team_id: 1, player_id: 7, games_minutes: 90, games_substitute: false}
+          - {fixture_id: 3, team_id: 1, player_id: 7, games_minutes: 25, games_substitute: false}
     expect:
       rows:
-        - {fixture_id: 6, team_id: 1, player_id: 7, expected_minutes: 90.0, expected_minutes_method: "l5_trimmed_mean", prior_appearance_count: 5}
-        - {fixture_id: 6, team_id: 1, player_id: 8, expected_minutes: 85.0, expected_minutes_method: "role_prior", prior_appearance_count: 0}
-        - {fixture_id: 6, team_id: 1, player_id: 9, expected_minutes: 15.0, expected_minutes_method: "role_prior", prior_appearance_count: 0}
+        - {fixture_id: 6, team_id: 1, player_id: 7, expected_minutes: 88.0, expected_minutes_if_plays: 88.0, p_plays: 1.0, expected_minutes_method: "starter_l5_trimmed_shrunk", prior_appearance_count: 3}
+        - {fixture_id: 6, team_id: 1, player_id: 8, expected_minutes: 85.0, expected_minutes_if_plays: 85.0, p_plays: 1.0, expected_minutes_method: "starter_prior", prior_appearance_count: 0}
+        - {fixture_id: 6, team_id: 1, player_id: 9, expected_minutes: 12.5, expected_minutes_if_plays: 25.0, p_plays: 0.5, expected_minutes_method: "bench_prior", prior_appearance_count: 0}

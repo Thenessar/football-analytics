@@ -17,6 +17,11 @@ clean-targets:
 
 vars:
   ranking_as_of_date: "2022-12-22"
+  # Expected-minutes role priors (ml_upgrade_backlog.md K1; provisional values,
+  # calibrated from production history in ticket K3 / ADR 0004).
+  starter_minutes_prior: 85.0
+  bench_participation_prior: 0.5
+  bench_cameo_minutes_prior: 25.0
 
 seeds:
   football_analytics:

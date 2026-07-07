@@ -99,7 +99,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
 
 ## Epic K — Expected Minutes v2 (fixes D-1)
 
-### K1. Role-conditional estimator in `fct_football__player_expected_minutes`
+### K1. Role-conditional estimator in `fct_football__player_expected_minutes` — ✅ DONE (2026-07-07)
 - **Files:** `dbt/models/marts/fct_football__player_expected_minutes.sql`, `dbt/models/marts/schema.yml`, `dbt/dbt_project.yml` (vars).
 - **Depends on:** O1.
 - **Current behavior:** single history CTE (`prior_appearances`, played minutes 1..130, role-blind); `is_starting` used only in the zero-history `case` branch.
@@ -114,6 +114,12 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - A habitual sub promoted to the XI gets a starter-branch estimate ≥ ~70, NOT his bench cameo average.
   - Unused-sub namings lower `p_plays`.
   - `dbt parse` clean; existing unit tests updated (the old red-card regression case must be re-expressed against the starter branch).
+- **Implementation notes:**
+  - **Deviation from the ticket text (improvement):** role history comes from `stg_football__player_match_stats.games_substitute` instead of joining historical `stg_football__lineups`. Stats rows exist only for completed fixtures, so future fixtures can never contribute phantom 0-minute bench observations (the lineups join would have needed an explicit completion filter), coverage does not depend on historical lineup ingestion, and the SQL stays single-source. Current-fixture role still comes from `stg_football__lineups.is_starting`.
+  - `p_plays` shrinkage: `(cameos + 4*prior) / (namings + 4)`; `if_plays` shrinkage `(n*hist + 2*prior) / (n + 2)` in both branches (degenerates to the prior with n=0, so the method labels `starter_prior`/`bench_prior` describe the same formula at n=0).
+  - `prior_appearance_count` kept, redefined as the depth of the active branch's history; `minutes_avg_l5` (role-blind, no consumers, embodied the bug) deleted.
+  - Bounds singular test extended: `p_plays` ∈ [0,1], `expected_minutes_if_plays` ∈ [0,120], starters must have `p_plays = 1`.
+  - Unit test uses a 3-start history (90/90/25-red-card) so the shrunk trimmed mean is exactly 88.0 — float-exact for dbt's row comparison.
 
 ### K2. dbt unit tests for the v2 estimator
 - **Files:** `dbt/models/marts/fct_football__player_expected_minutes_unit_tests.yml`, `dbt/tests/`.
