@@ -31,6 +31,12 @@ def _frame(rows=300, seed=9):
 
 def test_training_logs_metric_suite_and_reliability_artifacts(tmp_path):
     mlflow.set_tracking_uri(f"sqlite:///{tmp_path.as_posix()}/mlflow.db")
+    # Pin the artifact root too — otherwise artifacts land in ./mlruns
+    # relative to the working directory and pollute the repo.
+    experiment_name = "metric-suite-test"
+    mlflow.create_experiment(
+        experiment_name, artifact_location=f"file:///{tmp_path.as_posix()}/artifacts"
+    )
 
     result = train_poisson_lightgbm_with_mlflow(
         _frame(seed=1),
@@ -44,6 +50,7 @@ def test_training_logs_metric_suite_and_reliability_artifacts(tmp_path):
             num_boost_round=30,
             early_stopping_rounds=10,
         ),
+        experiment_name=experiment_name,
         run_name="metric-suite-test",
     )
 

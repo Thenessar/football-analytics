@@ -100,3 +100,7 @@ dbt/profiles.yml
 
 # dbt-generated local user id
 dbt/.user.yml
+
+# Local MLflow artifacts from tests
+mlruns/
+mlflow.db
