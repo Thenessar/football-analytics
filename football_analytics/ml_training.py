@@ -280,6 +280,46 @@ class ExposurePoissonLightGBMModel:
             for mean in means
         ]
 
+    def predict_from_frame(self, model_input: pd.DataFrame) -> np.ndarray:
+        """Serving-style predict: features + optional minutes column → means.
+
+        This is the single place exposure and goalkeeper-gating semantics
+        live for registered models (backlog M2). Exposure comes from the
+        first available of ``expected_minutes`` (inference), the model's
+        training ``exposure_column``, or ``games_minutes``; without any, the
+        output is a per-90 rate. Missing feature columns are filled with 0.0,
+        matching ``_prepare_xy``.
+        """
+
+        minutes_column = next(
+            (
+                column
+                for column in ("expected_minutes", self.exposure_column, "games_minutes")
+                if column in model_input.columns
+            ),
+            None,
+        )
+        if minutes_column is not None:
+            exposure = exposure_from_minutes(model_input[minutes_column])
+        else:
+            exposure = np.ones(len(model_input))
+        features = (
+            model_input.reindex(columns=self.feature_columns, fill_value=0.0)
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0.0)
+        )
+        raw = np.asarray(self.booster.predict(features, raw_score=True), dtype=float)
+        means = np.exp(raw + np.log(exposure))
+        if self.goalkeeper_only:
+            if "is_goalkeeper" in model_input.columns:
+                goalkeeper = model_input["is_goalkeeper"].fillna(False).astype(bool).to_numpy()
+            elif "position_group" in model_input.columns:
+                goalkeeper = model_input["position_group"].eq("G").to_numpy()
+            else:
+                goalkeeper = np.ones(len(model_input), dtype=bool)
+            means = np.where(goalkeeper, means, 0.0)
+        return means
+
 
 def exposure_from_minutes(minutes: Iterable[float]) -> np.ndarray:
     """Converts minutes played into positive 90-minute exposure units."""
@@ -500,7 +540,7 @@ def _fit_poisson_booster(
     )
 
 
-def _lightgbm_log_model_kwargs(
+def _log_model_kwargs(
     log_model_fn: Any,
     *,
     model_name: str,
@@ -508,7 +548,7 @@ def _lightgbm_log_model_kwargs(
     input_example: pd.DataFrame,
     signature: Any,
 ) -> Dict[str, Any]:
-    """Builds MLflow LightGBM logging kwargs across MLflow 2.x/3.x APIs."""
+    """Builds MLflow log_model kwargs across MLflow 2.x/3.x APIs."""
 
     parameters = inspect.signature(log_model_fn).parameters
     name_arg = "name" if "name" in parameters else "artifact_path"
@@ -518,6 +558,33 @@ def _lightgbm_log_model_kwargs(
         "input_example": input_example,
         "signature": signature,
     }
+
+
+def build_pyfunc_player_event_model(model: ExposurePoissonLightGBMModel) -> Any:
+    """Wraps the exposure model as an mlflow.pyfunc PythonModel (backlog M2).
+
+    The wrapper class is defined locally so cloudpickle serializes it by
+    value — loading only requires ``football_analytics`` (for the inner
+    dataclass) and lightgbm, not a matching wrapper import path. Batch
+    inference reaches the inner model via
+    ``loaded.unwrap_python_model().inner``.
+    """
+
+    import mlflow.pyfunc
+
+    class PlayerEventExposureModel(mlflow.pyfunc.PythonModel):
+        def __init__(self, inner: ExposurePoissonLightGBMModel):
+            self.inner = inner
+
+        def predict(self, context, model_input, params=None):  # noqa: ANN001
+            frame = (
+                model_input
+                if isinstance(model_input, pd.DataFrame)
+                else pd.DataFrame(model_input)
+            )
+            return self.inner.predict_from_frame(frame)
+
+    return PlayerEventExposureModel(model)
 
 
 def train_poisson_lightgbm_with_mlflow(
@@ -754,12 +821,15 @@ def train_poisson_lightgbm_with_mlflow(
                 if registered_model_name_prefix:
                     registered_model_name = f"{registered_model_name_prefix}__{target}"
                     mlflow.log_param(f"{target}_registered_model_name", registered_model_name)
+                    # Signature reflects the pyfunc serving contract (M2):
+                    # features + expected_minutes in, mean counts out.
                     input_example = X_train.head(min(5, len(X_train))).copy()
-                    model_output_example = booster.predict(input_example)
+                    input_example["expected_minutes"] = 90.0
+                    model_output_example = model.predict_from_frame(input_example)
                     signature = infer_signature(input_example, model_output_example)
                     registration_queue.append({
                         "target": target,
-                        "booster": booster,
+                        "model": model,
                         "registered_model_name": registered_model_name,
                         "input_example": input_example,
                         "signature": signature,
@@ -784,11 +854,14 @@ def train_poisson_lightgbm_with_mlflow(
         with mlflow.start_run(run_name=f"register__{entry['target']}"):
             mlflow.log_param("training_run_id", training_run_id)
             mlflow.log_param("target_event", entry["target"])
-            model_info = mlflow.lightgbm.log_model(
-                entry["booster"],
-                **_lightgbm_log_model_kwargs(
-                    mlflow.lightgbm.log_model,
-                    model_name=f"{entry['target']}_lightgbm_booster",
+            # Self-contained pyfunc artifact (M2): exposure semantics,
+            # feature columns, GK gating, and dispersion travel inside the
+            # registered model instead of being re-implemented by consumers.
+            model_info = mlflow.pyfunc.log_model(
+                python_model=build_pyfunc_player_event_model(entry["model"]),
+                **_log_model_kwargs(
+                    mlflow.pyfunc.log_model,
+                    model_name=f"{entry['target']}_player_event_model",
                     registered_model_name=entry["registered_model_name"],
                     input_example=entry["input_example"],
                     signature=entry["signature"],

@@ -272,22 +272,62 @@ def load_registered_event_models(
                 raise RuntimeError(f"No registered versions found for {model_name}")
             version = max(int(entry.version) for entry in versions)
             model_uri = f"models:/{model_name}/{version}"
-        booster = mlflow.lightgbm.load_model(model_uri)
-        # Dispersion tags set at registration (M1); absent on pre-M1
-        # versions, which then keep exact Poisson behavior.
-        version_tags = client.get_model_version(model_name, str(version)).tags or {}
+        artifact = load_event_model_artifact(model_uri, target_event=target)
+        if artifact["self_contained"]:
+            alpha_player = artifact["alpha_player"]
+            alpha_team = artifact["alpha_team"]
+        else:
+            # Pre-M2 raw boosters: dispersion tags set by M1 registrations;
+            # absent on pre-M1 versions, which keep exact Poisson behavior.
+            version_tags = client.get_model_version(model_name, str(version)).tags or {}
+            alpha_player = _tag_float(version_tags, "alpha_player")
+            alpha_team = _tag_float(version_tags, "alpha_team")
         models.append(LoadedEventModel(
             target_event=target,
-            booster=booster,
-            feature_columns=tuple(booster.feature_name()),
+            booster=artifact["booster"],
+            feature_columns=artifact["feature_columns"],
             model_name=model_name,
             model_version=str(version),
             model_stage_or_alias=alias,
-            goalkeeper_only=target in GOALKEEPER_ONLY_TARGETS,
-            alpha_player=_tag_float(version_tags, "alpha_player"),
-            alpha_team=_tag_float(version_tags, "alpha_team"),
+            goalkeeper_only=artifact["goalkeeper_only"],
+            alpha_player=alpha_player,
+            alpha_team=alpha_team,
         ))
     return models
+
+
+def load_event_model_artifact(model_uri: str, *, target_event: str) -> dict[str, Any]:
+    """Loads one registered artifact, handling both artifact generations (M2).
+
+    M2 models are pyfunc-wrapped ``ExposurePoissonLightGBMModel`` instances
+    carrying their own feature columns, goalkeeper gating, and dispersion;
+    pre-M2 versions are raw lightgbm-flavor boosters whose semantics live in
+    code. Returns a dict with ``booster``, ``feature_columns``,
+    ``goalkeeper_only``, ``alpha_player``/``alpha_team`` (M2 only), and
+    ``self_contained``.
+    """
+
+    import mlflow
+
+    try:
+        loaded = mlflow.pyfunc.load_model(model_uri)
+        inner = loaded.unwrap_python_model().inner
+        return {
+            "booster": inner.booster,
+            "feature_columns": tuple(inner.feature_columns),
+            "goalkeeper_only": bool(inner.goalkeeper_only),
+            "alpha_player": float(inner.alpha_player),
+            "alpha_team": float(inner.alpha_team),
+            "self_contained": True,
+        }
+    except Exception:
+        booster = mlflow.lightgbm.load_model(model_uri)
+        return {
+            "booster": booster,
+            "feature_columns": tuple(booster.feature_name()),
+            "goalkeeper_only": target_event in GOALKEEPER_ONLY_TARGETS,
+            "self_contained": False,
+        }
 
 
 def _tag_float(tags: Mapping[str, str], name: str, default: float = 0.0) -> float:

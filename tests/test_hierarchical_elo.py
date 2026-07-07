@@ -12,7 +12,7 @@ from football_analytics.elo import (
 )
 from football_analytics.ml_training import (
     DEFAULT_LIGHTGBM_FEATURES,
-    _lightgbm_log_model_kwargs,
+    _log_model_kwargs,
     _prepare_xy,
     add_model_interaction_features,
     count_threshold_probabilities,
@@ -450,7 +450,7 @@ def test_default_lightgbm_features_include_persisted_and_derived_elo_features():
     assert expected.issubset(set(DEFAULT_LIGHTGBM_FEATURES))
 
 
-def test_lightgbm_log_model_kwargs_include_signature_and_support_mlflow_versions():
+def test_log_model_kwargs_include_signature_and_support_mlflow_versions():
     example = pd.DataFrame({"feature": [1.0]})
     signature = object()
 
@@ -460,14 +460,14 @@ def test_lightgbm_log_model_kwargs_include_signature_and_support_mlflow_versions
     def mlflow2_log_model(model, artifact_path, registered_model_name=None, input_example=None, signature=None):
         return None
 
-    mlflow3_kwargs = _lightgbm_log_model_kwargs(
+    mlflow3_kwargs = _log_model_kwargs(
         mlflow3_log_model,
         model_name="shots_total_lightgbm_booster",
         registered_model_name="catalog.schema.model",
         input_example=example,
         signature=signature,
     )
-    mlflow2_kwargs = _lightgbm_log_model_kwargs(
+    mlflow2_kwargs = _log_model_kwargs(
         mlflow2_log_model,
         model_name="shots_total_lightgbm_booster",
         registered_model_name="catalog.schema.model",
