@@ -175,6 +175,10 @@ models:
         description: games_minutes / 90 for training rows; null on inference rows (use expected_exposure there).
       - name: expected_exposure
         description: expected_minutes / 90; populated whenever the player has an expected-minutes row.
+      - name: p_plays
+        description: Probability the player gets on the pitch (ADR 0004 decomposition); 1.0 for confirmed starters. Consumed by the simulation layer.
+      - name: expected_minutes_if_plays
+        description: Expected minutes conditional on playing (ADR 0004 decomposition). Consumed by the simulation layer.
 
   - name: fct_football__player_expected_minutes
     description: >

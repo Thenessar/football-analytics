@@ -48,6 +48,8 @@ def _fixture_rows(starters_per_team=11, teams=(1, 2)):
                 "is_starting": True,
                 "formation": "4-3-3",
                 "expected_minutes": 90.0,
+                "p_plays": 1.0,
+                "expected_minutes_if_plays": 90.0,
                 "team_elo_general_pre": 1500.0,
             })
     return pd.DataFrame(rows)
@@ -146,6 +148,35 @@ def test_prediction_records_shape_probabilities_and_goalkeeper_gating():
     assert (records["model_version"].isin({"3", "2"})).all()
     assert (records["feature_table_version"] == "42").all()
 
+    # Role-conditional decomposition columns pass through for the simulator.
+    assert (records["p_plays"] == 1.0).all()
+    assert (records["expected_minutes_if_plays"] == 90.0).all()
+
+
+def test_prediction_records_tolerate_missing_decomposition_columns():
+    rows = _fixture_rows().drop(columns=["p_plays", "expected_minutes_if_plays"])
+    models = [
+        LoadedEventModel(
+            target_event="shots_total",
+            booster=StubBooster(raw_score=0.0),
+            feature_columns=("team_elo_general_pre",),
+            model_name="catalog.gold.player_event__shots_total",
+            model_version="3",
+        ),
+    ]
+
+    records = build_prediction_records(
+        rows,
+        models,
+        prediction_set_id="set-1",
+        prediction_run_id="run-1",
+        lineup_source=LINEUP_SOURCE_CONFIRMED,
+        feature_table_name="catalog.gold.fct_football__player_event_features",
+    )
+
+    assert records["p_plays"].isna().all()
+    assert records["expected_minutes_if_plays"].isna().all()
+
 
 class _FakeWriter:
     def __init__(self, log):
@@ -158,7 +189,8 @@ class _FakeWriter:
         self._log["mode"] = mode
         return self
 
-    def option(self, _key, _value):
+    def option(self, key, value):
+        self._log.setdefault("options", {})[key] = value
         return self
 
     def saveAsTable(self, table):
@@ -224,6 +256,8 @@ def test_prediction_write_appends_and_flips_older_active_sets():
     assert summary == {"written": 2, "deactivated_sets": 2}
     assert spark.write_log["mode"] == "append"
     assert spark.write_log["table"] == "catalog.gold.pred_football__player_event_predictions"
+    # Additive schema changes (K5 columns) must reach pre-existing tables.
+    assert spark.write_log["options"].get("mergeSchema") == "true"
     # Key columns are cast to the DDL types so Delta never merges mismatched
     # field types (Python ints otherwise arrive as LONG vs the table's INT).
     assert "fixture_id" in spark.write_log["casts"]
@@ -231,7 +265,15 @@ def test_prediction_write_appends_and_flips_older_active_sets():
 
     create = spark.sql_statements[0]
     assert "CREATE TABLE IF NOT EXISTS" in create
-    for column in ("prediction_set_id", "target_event", "predicted_p_ge_3", "is_active_prediction", "lineup_source"):
+    for column in (
+        "prediction_set_id",
+        "target_event",
+        "p_plays",
+        "expected_minutes_if_plays",
+        "predicted_p_ge_3",
+        "is_active_prediction",
+        "lineup_source",
+    ):
         assert column in create
 
     delete = spark.sql_statements[1]

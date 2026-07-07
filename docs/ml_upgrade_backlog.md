@@ -148,13 +148,14 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - View is empty-but-queryable before data lands (same convention as the other `mon_` views).
 - **Implementation notes:** view segments by `league_season × is_starting × expected_minutes_method × position_group` (the method label already encodes the history-depth bucket, so a separate bucket column would have been redundant). Adds `avg_p_plays` vs `actual_played_share` so bench participation calibration is directly visible. Actual minutes coalesce to 0 — a bench player who never came on played 0 minutes and p_plays prices that outcome.
 
-### K5. Expose the decomposition to the feature mart and prediction table
+### K5. Expose the decomposition to the feature mart and prediction table — ✅ DONE (2026-07-07)
 - **Files:** `dbt/models/marts/fct_football__player_event_features.sql` (+ schema.yml), `football_analytics/inference.py`, `notebooks/04_prematch_inference_predict.py` (only if column pass-through needs it), `tests/test_inference.py`.
 - **Depends on:** K1.
 - **Acceptance criteria:**
   - Feature mart carries `p_plays` and `expected_minutes_if_plays` through from the expected-minutes mart (nullable for training rows without lineup data, same as `expected_minutes` today). `expected_exposure` definition unchanged.
   - `build_prediction_records` writes two new columns to `pred_football__player_event_predictions`: `p_plays`, `expected_minutes_if_plays`; `ensure_player_event_predictions_table` DDL extended (additive `ALTER TABLE ... ADD COLUMNS` guard for the existing table, or document a one-time migration in the ticket notes); `_PREDICTION_COLUMN_TYPES` updated.
   - Unit test proves the columns land in prediction records and survive the writer's type casts.
+- **Implementation notes:** migration handled via `.option("mergeSchema", "true")` on the Delta append (additive columns land on pre-K5 tables automatically; asserted in the writer test) instead of an `ALTER TABLE` guard. Records tolerate feature tables without the columns (null pass-through, covered by `test_prediction_records_tolerate_missing_decomposition_columns`). The feature-mart leakage unit test needed no fixture changes — its expected-minutes mock uses `rows: []`, which materializes the real model's full column set.
 
 ---
 

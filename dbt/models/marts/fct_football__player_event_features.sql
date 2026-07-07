@@ -268,7 +268,9 @@ expected_minutes as (
         team_id,
         player_id,
         expected_minutes,
-        expected_minutes_method
+        expected_minutes_method,
+        p_plays,
+        expected_minutes_if_plays
     from {{ ref('fct_football__player_expected_minutes') }}
 )
 
@@ -368,6 +370,10 @@ select
     expected_minutes.expected_minutes,
     expected_minutes.expected_minutes_method,
     case when expected_minutes.expected_minutes is not null then greatest(expected_minutes.expected_minutes / 90.0, 0.000001) end as expected_exposure,
+    -- Role-conditional decomposition (ADR 0004): the simulation layer samples
+    -- bench participation from p_plays and scales rates by minutes-if-plays.
+    expected_minutes.p_plays,
+    expected_minutes.expected_minutes_if_plays,
 
     base.offsides,
     base.shots_total,

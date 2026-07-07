@@ -128,6 +128,10 @@ def deterministic_prediction_set_id(
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    return float(value) if value is not None and pd.notna(value) else None
+
+
 def _numeric_features(frame: pd.DataFrame, feature_columns: Sequence[str]) -> pd.DataFrame:
     features = pd.DataFrame(index=frame.index)
     for column in feature_columns:
@@ -207,6 +211,12 @@ def build_prediction_records(
                 "formation": getattr(row, "formation", None),
                 "target_event": model.target_event,
                 "expected_minutes": float(row.expected_minutes) if pd.notna(row.expected_minutes) else None,
+                # Role-conditional decomposition (ADR 0004) consumed by the
+                # simulation layer; nullable for feature tables predating K5.
+                "p_plays": _optional_float(getattr(row, "p_plays", None)),
+                "expected_minutes_if_plays": _optional_float(
+                    getattr(row, "expected_minutes_if_plays", None)
+                ),
                 "predicted_mean": float(means[index]),
                 "predicted_p_ge_1": probabilities.get("p_ge_1"),
                 "predicted_p_ge_2": probabilities.get("p_ge_2"),
@@ -292,6 +302,8 @@ def ensure_player_event_predictions_table(spark, prediction_table: str) -> None:
             formation STRING,
             target_event STRING,
             expected_minutes DOUBLE,
+            p_plays DOUBLE,
+            expected_minutes_if_plays DOUBLE,
             predicted_mean DOUBLE,
             predicted_p_ge_1 DOUBLE,
             predicted_p_ge_2 DOUBLE,
@@ -318,6 +330,8 @@ _PREDICTION_COLUMN_TYPES = {
     "fixture_date_utc": "timestamp",
     "prediction_created_at_utc": "timestamp",
     "expected_minutes": "double",
+    "p_plays": "double",
+    "expected_minutes_if_plays": "double",
     "predicted_mean": "double",
     "predicted_p_ge_1": "double",
     "predicted_p_ge_2": "double",
@@ -355,7 +369,13 @@ def write_player_event_predictions(
     spark.sql(
         f"DELETE FROM {prediction_table} WHERE prediction_set_id IN ({quoted})"
     )
-    frame.write.format("delta").mode("append").saveAsTable(prediction_table)
+    # mergeSchema lets additive column changes (e.g. K5's p_plays /
+    # expected_minutes_if_plays) land on tables created before the change
+    # without a manual migration; Delta appends never drop or retype columns
+    # this way.
+    frame.write.format("delta").mode("append").option(
+        "mergeSchema", "true"
+    ).saveAsTable(prediction_table)
 
     deactivated = 0
     keys = records[["fixture_id", "model_name", "model_version", "prediction_set_id"]].drop_duplicates()
