@@ -57,6 +57,14 @@ digest).
    identity so the game stays coherent.
 7. **Assists:** team assists `~ Binomial(team goals, assist_per_goal_rate)`,
    allocated by assist intensity. Guarantees `assists <= goals` per team.
+   The default rate (0.72) is provisional — the calibration query below
+   could not run on 2026-07-07 (Databricks free daily quota exhausted);
+   rerun it and update `SimulationConfig.assist_per_goal_rate`:
+
+   ```sql
+   SELECT sum(coalesce(goals_assists, 0)) / nullif(sum(coalesce(goals_total, 0)), 0)
+   FROM football_analytics.silver.stg_football__player_match_stats
+   ```
 8. **Cards:** yellows go through the NB-total + allocation path, clipped at
    2 per player; reds are per-player Bernoulli
    (`min(rate90_red * m/90, 0.5)`), at most 1.

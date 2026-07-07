@@ -14,6 +14,7 @@ from football_analytics.simulation import (
     multinomial_allocate,
     sample_minutes,
     sample_nb_totals,
+    simulate_fixture,
 )
 
 
@@ -194,6 +195,88 @@ def test_allocation_repairs_zero_weight_and_empty_pitch_edges():
     # Sim 1: nobody on pitch -> the total itself is forced to zero.
     assert repaired[1] == 0
     assert counts[:, 1].sum() == 0
+
+
+def test_simulated_game_satisfies_every_structural_invariant():
+    inputs = build_simulation_inputs(
+        _active_predictions(), alpha_team={"shots_total": 0.2, "fouls_committed": 0.1}
+    )
+    config = SimulationConfig(n_sims=1000, seed=17)
+    result = simulate_fixture(inputs, config)
+
+    counts = result.counts
+    assert set(counts) == set(ALL_SIMULATION_TARGETS)
+    team_a, team_b = inputs.team_ids
+    mask_a = result.team_mask(team_a)
+    mask_b = result.team_mask(team_b)
+
+    # Shot chain per player, every draw.
+    assert (counts["goals_total"] <= counts["shots_on"]).all()
+    assert (counts["shots_on"] <= counts["shots_total"]).all()
+
+    # Fouls mirror: committed by A == drawn by B, per simulation, exactly.
+    np.testing.assert_array_equal(
+        counts["fouls_committed"][mask_a].sum(axis=0),
+        counts["fouls_drawn"][mask_b].sum(axis=0),
+    )
+    np.testing.assert_array_equal(
+        counts["fouls_committed"][mask_b].sum(axis=0),
+        counts["fouls_drawn"][mask_a].sum(axis=0),
+    )
+
+    # Saves identity: starting GK of A saves B's on-target misses; everyone
+    # else records zero saves.
+    players = inputs.players
+    gk_a = players[(players["team_id"] == team_a) & (players["position_group"] == "G")].index[0]
+    expected_saves = np.maximum(
+        counts["shots_on"][mask_b].sum(axis=0) - counts["goals_total"][mask_b].sum(axis=0),
+        0,
+    )
+    np.testing.assert_array_equal(counts["goals_saves"][gk_a], expected_saves)
+    non_gk = np.ones(len(players), dtype=bool)
+    gk_b = players[(players["team_id"] == team_b) & (players["position_group"] == "G")].index[0]
+    non_gk[[gk_a, gk_b]] = False
+    assert (counts["goals_saves"][non_gk] == 0).all()
+
+    # Assists never exceed team goals; cards respect their caps.
+    assert (
+        counts["goals_assists"][mask_a].sum(axis=0)
+        <= counts["goals_total"][mask_a].sum(axis=0)
+    ).all()
+    assert counts["cards_yellow"].max() <= config.max_yellow_per_player
+    assert counts["cards_red"].max() <= 1
+
+    # Players who stayed on the bench in a simulation record nothing.
+    off_pitch = result.minutes == 0.0
+    for target in ALL_SIMULATION_TARGETS:
+        assert (counts[target][off_pitch] == 0).all()
+
+
+def test_simulation_is_deterministic_under_seed():
+    inputs = build_simulation_inputs(_active_predictions())
+    config = SimulationConfig(n_sims=200, seed=23)
+    first = simulate_fixture(inputs, config)
+    second = simulate_fixture(inputs, config)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(first.counts[target], second.counts[target])
+
+
+def test_simulation_means_track_predicted_means():
+    inputs = build_simulation_inputs(_active_predictions())
+    result = simulate_fixture(inputs, SimulationConfig(n_sims=30000, seed=29))
+
+    players = inputs.players
+    starters = players["is_starting"].to_numpy()
+    outfield = starters & (players["position_group"] != "G").to_numpy()
+
+    # Starter outfielders: predicted mean = rate90 * 90/90 = rate90.
+    simulated = result.counts["shots_total"][outfield].mean(axis=1)
+    assert simulated == pytest.approx(1.5, rel=0.05)
+
+    # Bench players: unconditional mean = p_plays * if_plays/90 * rate90.
+    bench = ~starters & (players["position_group"] != "G").to_numpy()
+    bench_mean = result.counts["shots_total"][bench].mean(axis=1)
+    assert bench_mean == pytest.approx(0.4 * (25.0 / 90.0) * 1.5, rel=0.10)
 
 
 def test_minutes_sampling_is_seeded_and_matches_p_plays():

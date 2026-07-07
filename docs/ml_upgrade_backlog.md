@@ -277,7 +277,7 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
   - Mean preservation: across sims, `mean(counts_p) ≈ λ_p·E[m_p]/90` within 2% for a 50k-sim test.
 - **Implementation notes:** multinomial realized as sequential conditional binomials with suffix-sum denominators (exact decomposition, vectorized across sims, no batched-multinomial numpy requirement; the last positive-weight player's conditional ratio is exactly 1.0 by float identity, so remainders never leak). `allocate_event_totals` repairs the two degenerate edges before allocation and returns repaired totals so downstream team sums stay consistent. NB totals verified against the analytic variance `M + αM²` at 60k draws; conservation asserted exactly (`Σ_p counts == totals` per sim).
 
-### N3. Structural coherence chains
+### N3. Structural coherence chains — ✅ DONE (2026-07-07)
 - **Files:** `football_analytics/simulation.py`, `tests/test_simulation.py`.
 - **Depends on:** N2.
 - **Required behavior (per iteration, per player unless stated):**
@@ -289,6 +289,7 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
   - **Cards:** yellows capped at 2/player (sample then clip), `red ~ Bernoulli(clip(μ_red,p·m_p/90·adjustment,0,0.5))` capped at 1.
   - `offsides`, `passes_total`: plain N2 path.
 - **Acceptance criteria:** an invariants test asserts on every iteration of a 1k-sim run: `goals ≤ shots_on ≤ shots_total` per player; `Σ fouls_committed_A = Σ fouls_drawn_B`; `saves_GK_A = max(0, shots_on_B − goals_B)`; assists per team ≤ goals per team; yellows ≤ 2, reds ≤ 1. Plus the assist-rate calibration query recorded in ticket notes (empirical Σassists/Σgoals from completed fixtures → update `assist_per_goal_rate` default).
+- **Implementation notes:** `simulate_fixture` with a fixed draw order for determinism. Fouls-mirror totals are validated against *both* teams' pitches before either allocation so the mirror holds exactly even in degenerate sims. Assist allocation does not exclude the scorer (ADR 0005 simplification #4 — team invariants unaffected). Off-pitch players record zero across all 11 targets (asserted). Extra test: unconditional simulated means track `p_plays × if_plays/90 × rate90` for bench players within 10%. ⚠️ Assist-rate calibration query could not run (Databricks free daily quota exhausted after K3); query recorded in ADR 0005, default 0.72 stays provisional — rerun via `scripts/run_query.py` and update `SimulationConfig.assist_per_goal_rate`.
 
 ### N4. Summary statistics + `sim_football__fixture_simulation` Delta table
 - **Files:** `football_analytics/simulation.py` (summarize + writer), `football_analytics/inference.py` or new module section for DDL, `dbt/models/sources.yml` (register source), new dbt singular tests, `tests/test_simulation.py`.

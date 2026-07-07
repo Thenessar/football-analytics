@@ -303,6 +303,174 @@ def multinomial_allocate(
     return out
 
 
+@dataclass
+class SimulationResult:
+    """Raw draws for one fixture: counts[target] is a (players x sims) matrix."""
+
+    inputs: SimulationInputs
+    config: SimulationConfig
+    minutes: np.ndarray
+    counts: Dict[str, np.ndarray]
+
+    def team_mask(self, team_id: int) -> np.ndarray:
+        return (self.inputs.players["team_id"] == team_id).to_numpy()
+
+    def team_totals(self, target: str, team_id: int) -> np.ndarray:
+        """Per-simulation team total for one event (sims,)."""
+
+        return self.counts[target][self.team_mask(team_id)].sum(axis=0)
+
+
+def _safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
+    """Elementwise ratio clipped to [0, 1]; 0 where the denominator is 0."""
+
+    ratio = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(np.asarray(numerator, dtype=float)),
+        where=np.asarray(denominator) > 0.0,
+    )
+    return np.clip(ratio, 0.0, 1.0)
+
+
+def _starting_goalkeeper_index(players: pd.DataFrame, team_id: int) -> int:
+    """Row index of the team's starting goalkeeper.
+
+    Falls back to the team player with the highest saves intensity when the
+    lineup carries no explicit starting G (position data errors happen).
+    """
+
+    team = players[players["team_id"] == team_id]
+    goalkeepers = team[
+        team.get("position_group", pd.Series(dtype=object)).eq("G")
+        & team["is_starting"]
+    ]
+    if not goalkeepers.empty:
+        return int(goalkeepers.index[0])
+    return int(team["rate90_goals_saves"].idxmax())
+
+
+def simulate_fixture(
+    inputs: SimulationInputs,
+    config: Optional[SimulationConfig] = None,
+) -> SimulationResult:
+    """Runs the full coherent Monte Carlo game (ADR 0005 sampling design).
+
+    Draw order is fixed, so identical inputs + config are bit-identical:
+    minutes → volume events (shots_total, passes_total, offsides,
+    cards_yellow) → shot chain thinning → fouls mirror → saves identity →
+    assists → red cards.
+    """
+
+    cfg = config or SimulationConfig()
+    rng = np.random.default_rng(cfg.seed)
+    players = inputs.players
+    n_players = len(players)
+
+    minutes = sample_minutes(inputs, cfg, rng)
+    exposure = minutes / 90.0
+    on_pitch = exposure > 0.0
+    team_masks = {
+        team_id: (players["team_id"] == team_id).to_numpy()
+        for team_id in inputs.team_ids
+    }
+
+    def weights_for(target: str) -> np.ndarray:
+        return inputs.rates(target)[:, None] * exposure
+
+    counts: Dict[str, np.ndarray] = {}
+
+    # 1. Volume events: NB team total → multinomial allocation, per team.
+    for target in ("shots_total", "passes_total", "offsides", "cards_yellow"):
+        alpha = inputs.alpha_team.get(target, 0.0)
+        allocated_all = np.zeros((n_players, cfg.n_sims), dtype=np.int64)
+        raw_weights = weights_for(target)
+        for team_id, mask in team_masks.items():
+            team_weights = np.where(mask[:, None], raw_weights, 0.0)
+            totals = sample_nb_totals(rng, team_weights.sum(axis=0), alpha)
+            allocated, _ = allocate_event_totals(
+                rng, totals, team_weights, mask[:, None] & on_pitch
+            )
+            allocated_all += allocated
+        counts[target] = allocated_all
+    # Cap after allocation: a fourth yellow to one player is a data
+    # impossibility; the cap rarely binds and the tiny total shift is
+    # accepted (ADR 0005).
+    counts["cards_yellow"] = np.minimum(counts["cards_yellow"], cfg.max_yellow_per_player)
+
+    # 2. Shot chain: binomial thinning keeps goals <= shots_on <= shots_total
+    # in every draw. Ratios come from per-90 intensities per player.
+    q_on = _safe_ratio(inputs.rates("shots_on"), inputs.rates("shots_total"))
+    counts["shots_on"] = rng.binomial(counts["shots_total"], q_on[:, None])
+    q_goal = _safe_ratio(inputs.rates("goals_total"), inputs.rates("shots_on"))
+    counts["goals_total"] = rng.binomial(counts["shots_on"], q_goal[:, None])
+
+    # 3. Fouls mirror: one draw per directed pair, allocated to both sides,
+    # so committed(A) == drawn(B) exactly. Totals are validated against both
+    # teams' pitches first so the two allocations always share the total.
+    committed = np.zeros((n_players, cfg.n_sims), dtype=np.int64)
+    drawn = np.zeros((n_players, cfg.n_sims), dtype=np.int64)
+    alpha_fouls = inputs.alpha_team.get("fouls_committed", 0.0)
+    w_committed = weights_for("fouls_committed")
+    w_drawn = weights_for("fouls_drawn")
+    team_a, team_b = inputs.team_ids
+    for committing_team, drawing_team in ((team_a, team_b), (team_b, team_a)):
+        commit_mask = team_masks[committing_team][:, None]
+        draw_mask = team_masks[drawing_team][:, None]
+        commit_weights = np.where(commit_mask, w_committed, 0.0)
+        draw_weights = np.where(draw_mask, w_drawn, 0.0)
+        pair_means = 0.5 * (commit_weights.sum(axis=0) + draw_weights.sum(axis=0))
+        totals = sample_nb_totals(rng, pair_means, alpha_fouls)
+        both_on_pitch = (
+            ((commit_mask & on_pitch).sum(axis=0) > 0)
+            & ((draw_mask & on_pitch).sum(axis=0) > 0)
+        )
+        totals = np.where(both_on_pitch, totals, 0)
+        allocated_commit, _ = allocate_event_totals(
+            rng, totals, commit_weights, commit_mask & on_pitch
+        )
+        allocated_drawn, _ = allocate_event_totals(
+            rng, totals, draw_weights, draw_mask & on_pitch
+        )
+        committed += allocated_commit
+        drawn += allocated_drawn
+    counts["fouls_committed"] = committed
+    counts["fouls_drawn"] = drawn
+
+    # 4. Saves identity: the starting goalkeeper faces the opponent's
+    # on-target shots; whatever does not go in, he saved (ADR 0005 §5-6).
+    saves = np.zeros((n_players, cfg.n_sims), dtype=np.int64)
+    for team_id, opponent_id in ((team_a, team_b), (team_b, team_a)):
+        opponent_mask = team_masks[opponent_id]
+        opponent_on_target = counts["shots_on"][opponent_mask].sum(axis=0)
+        opponent_goals = counts["goals_total"][opponent_mask].sum(axis=0)
+        goalkeeper_index = _starting_goalkeeper_index(players, team_id)
+        saves[goalkeeper_index] = np.maximum(opponent_on_target - opponent_goals, 0)
+    counts["goals_saves"] = saves
+
+    # 5. Assists: at most one per goal (Binomial(team goals, assist rate)),
+    # allocated by assist intensity — assists <= goals per team by design.
+    assists = np.zeros((n_players, cfg.n_sims), dtype=np.int64)
+    w_assists = weights_for("goals_assists")
+    for team_id, mask in team_masks.items():
+        team_goals = counts["goals_total"][mask].sum(axis=0)
+        assist_totals = rng.binomial(team_goals, cfg.assist_per_goal_rate)
+        team_weights = np.where(mask[:, None], w_assists, 0.0)
+        allocated, _ = allocate_event_totals(
+            rng, assist_totals, team_weights, mask[:, None] & on_pitch
+        )
+        assists += allocated
+    counts["goals_assists"] = assists
+
+    # 6. Red cards: per-player Bernoulli, capped at 1 by construction.
+    red_probability = np.clip(
+        inputs.rates("cards_red")[:, None] * exposure, 0.0, cfg.max_red_probability
+    )
+    counts["cards_red"] = rng.binomial(1, red_probability)
+
+    return SimulationResult(inputs=inputs, config=cfg, minutes=minutes, counts=counts)
+
+
 def allocate_event_totals(
     rng: np.random.Generator,
     totals: np.ndarray,
