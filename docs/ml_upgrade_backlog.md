@@ -182,13 +182,14 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - This harness is the required evidence for every Epic M adoption decision.
 - **Implementation notes:** `rolling_origin_folds` landed with L1 (pure primitive). `run_rolling_origin_backtest` lives in `ml_training.py` and returns `report`/`summary`/`skipped` frames; the booster-fitting core was extracted into `_fit_poisson_booster` shared with `train_poisson_lightgbm_with_mlflow` so the two paths cannot diverge. Fold/target pairs are skipped (with reason) below 50 train rows or with zero positive labels — `cards_red` on small folds hits this by design. `--backtest` in the script logs only cross-fold mean/std scalars plus a consolidated CSV/JSON artifact bundle in a model-free run. End-to-end test trains real LightGBM boosters on synthetic seasons and asserts positive skill vs the position-group baseline on every fold.
 
-### L3. Wire the new metrics into standard training runs
+### L3. Wire the new metrics into standard training runs — ✅ DONE (2026-07-07)
 - **Files:** `football_analytics/ml_training.py` (`train_poisson_lightgbm_with_mlflow`), `tests/` (extend existing training tests if present, else add `tests/test_ml_training_metrics.py` with a lightgbm-optional skip marker).
 - **Depends on:** L1.
 - **Acceptance criteria:**
   - Per target, validation now also logs: `rps`, `brier_ge_1`, `ece_ge_1`, `dispersion_index`, `skill_vs_posgroup_rate`, `skill_vs_player_l5`, `rank_spearman`, `top1_hit_rate` (8 new scalars × 11 targets — within quota).
   - Reliability tables and per-position-group breakdowns of the new metrics go to run **artifacts** (CSV), not metrics.
   - `evaluate_count_predictions` remains backward-compatible (existing keys unchanged).
+- **Implementation notes:** training logs the full `validation_metric_suite` scalar set (11 per target — the 8 required plus `brier_ge_2`/`ece_ge_2`/`top3_hit_rate`; non-finite values skipped). Reliability tables land as `{target}_reliability_ge_{k}.csv` and the extended per-position-group breakdown (basic + rps + dispersion) as `{target}_position_group_metrics.csv` under `model_artifacts/`. Suite also returned in `result["metrics"][target]["validation_suite"]`. Integration test (`tests/test_ml_training_metrics.py`) runs real training against a local sqlite MLflow store (MLflow 3.x refuses the legacy file store) and asserts metrics + artifacts exist.
 
 ### L4. Baseline-only reference run mode
 - **Files:** `scripts/train_poisson_lgbm.py` (`--baselines-only` flag), `football_analytics/evaluation.py`.

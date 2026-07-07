@@ -22,7 +22,12 @@ import pandas as pd
 
 # Canonical scoring primitives live in evaluation.py (ml_upgrade_backlog.md
 # L1); poisson_log_loss is re-exported here for backward compatibility.
-from football_analytics.evaluation import poisson_log_loss  # noqa: F401
+from football_analytics.evaluation import (  # noqa: F401
+    dispersion_index,
+    poisson_log_loss,
+    ranked_probability_score,
+    validation_metric_suite,
+)
 
 
 # All 11 target events from business_logic.md §2, trained independently
@@ -627,11 +632,38 @@ def train_poisson_lightgbm_with_mlflow(
                 for metric_name, metric_value in valid_metrics.items():
                     mlflow.log_metric(f"{target}_validation_{metric_name}", metric_value)
 
+                # L-series metric suite (ml_upgrade_backlog.md L3): proper
+                # scoring, calibration, dispersion, baseline skill, and
+                # within-fixture ranking. Scalars go to MLflow metrics;
+                # reliability tables go to artifacts (Working Agreement #4).
+                suite = validation_metric_suite(
+                    train_frame=target_train_df,
+                    valid_frame=target_valid_df,
+                    y_valid=y_valid,
+                    mu_valid=valid_mu,
+                    target=target,
+                    train_exposure=train_exposure,
+                    valid_exposure=valid_exposure,
+                )
+                for metric_name, metric_value in suite["metrics"].items():
+                    if np.isfinite(metric_value):
+                        mlflow.log_metric(
+                            f"{target}_validation_{metric_name}", float(metric_value)
+                        )
+                for artifact_name, table in suite["artifacts"].items():
+                    if not table.empty:
+                        table.to_csv(
+                            artifact_dir / f"{target}_{artifact_name}.csv", index=False
+                        )
+
                 # Chronological-evaluation harness (F4): report validation
                 # metrics per position group so miscalibrated segments are
                 # visible (position-specific models stay deferred, ADR 0003).
+                # Basic metrics stay as MLflow metrics for continuity; the
+                # extended per-group breakdown goes to one CSV artifact.
                 if "position_group" in target_valid_df.columns:
                     group_values = target_valid_df["position_group"].fillna("unknown").to_numpy()
+                    group_rows = []
                     for group in sorted(set(group_values)):
                         group_mask = group_values == group
                         if not group_mask.any():
@@ -644,6 +676,22 @@ def train_poisson_lightgbm_with_mlflow(
                                 f"{target}_validation_{metric_name}_pos_{group}",
                                 metric_value,
                             )
+                        group_rows.append({
+                            "position_group": group,
+                            "rows": int(group_mask.sum()),
+                            **group_metrics,
+                            "rps": ranked_probability_score(
+                                y_valid[group_mask], valid_mu[group_mask]
+                            ),
+                            "dispersion_index": dispersion_index(
+                                y_valid[group_mask], valid_mu[group_mask]
+                            ),
+                        })
+                    if group_rows:
+                        pd.DataFrame(group_rows).to_csv(
+                            artifact_dir / f"{target}_position_group_metrics.csv",
+                            index=False,
+                        )
 
                 _log_feature_importance_artifacts(
                     booster=booster,
@@ -679,6 +727,7 @@ def train_poisson_lightgbm_with_mlflow(
                 trained["metrics"][target] = {
                     "train": train_metrics,
                     "validation": valid_metrics,
+                    "validation_suite": suite["metrics"],
                 }
 
             mlflow.log_artifacts(str(artifact_dir), artifact_path="model_artifacts")
