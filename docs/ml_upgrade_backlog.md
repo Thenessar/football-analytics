@@ -140,12 +140,13 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - ADR 0004 records the estimator, priors + provenance query, shrinkage constants, and the deferred ML-model alternative with its adoption trigger (see K4).
 - **Implementation notes:** measured over n=90,470 completed player rows via `scripts/run_query.py`: starter mean 80.41', bench participation 0.3952, bench cameo mean 22.97' → vars set to 80.0 / 0.4 / 23.0 (all three provisional values were too generous). Unit tests pin their own priors via dbt unit-test `overrides.vars`, so recalibration never breaks float-exact expectations. ADR 0002 marked superseded.
 
-### K4. Expected-minutes accuracy monitoring + estimator evaluation harness
+### K4. Expected-minutes accuracy monitoring + estimator evaluation harness — ✅ DONE (2026-07-07)
 - **Files:** new `dbt/models/marts/mon_football__expected_minutes_accuracy.sql` (+ schema.yml), optionally a small helper in `football_analytics/`.
 - **Depends on:** K1.
 - **Acceptance criteria:**
   - dbt view over completed fixtures joining the expected-minutes mart to actual `games_minutes`: MAE and bias segmented by `is_starting` × `expected_minutes_method` × prior-history-count bucket, plus row counts. This is the harness that must show v2 < v1 error for bench players, and it is the gate any future ML minutes model must beat (adoption trigger for the ADR 0004 deferred alternative: an ML estimator must reduce overall MAE ≥ 10% relative on a season-holdout before it replaces the SQL estimator).
   - View is empty-but-queryable before data lands (same convention as the other `mon_` views).
+- **Implementation notes:** view segments by `league_season × is_starting × expected_minutes_method × position_group` (the method label already encodes the history-depth bucket, so a separate bucket column would have been redundant). Adds `avg_p_plays` vs `actual_played_share` so bench participation calibration is directly visible. Actual minutes coalesce to 0 — a bench player who never came on played 0 minutes and p_plays prices that outcome.
 
 ### K5. Expose the decomposition to the feature mart and prediction table
 - **Files:** `dbt/models/marts/fct_football__player_event_features.sql` (+ schema.yml), `football_analytics/inference.py`, `notebooks/04_prematch_inference_predict.py` (only if column pass-through needs it), `tests/test_inference.py`.

@@ -117,6 +117,15 @@ models:
       and the segment's date range. Dashboarding on top is a follow-up; this
       view is the queryable check required by backlog I2.
 
+  - name: mon_football__expected_minutes_accuracy
+    description: >
+      Expected-minutes estimator accuracy over completed fixtures (one row
+      per league_season / is_starting / expected_minutes_method /
+      position_group segment): MAE, bias, average expected vs actual minutes,
+      and p_plays-vs-actual participation calibration for bench players.
+      Gate for the ADR 0004 deferred ML minutes model (>=10% relative MAE
+      improvement required).
+
   - name: mon_football__prediction_coverage
     description: >
       Per-fixture operational coverage: confirmed starters, starters with an
