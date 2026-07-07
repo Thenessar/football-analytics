@@ -256,7 +256,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
 
 Produces a full simulated game per fixture: per-player counts for all 11 events + team totals + scoreline distribution, coherent by construction, from N (default 10,000) Monte Carlo iterations.
 
-### N1. Simulation core: inputs, config, RNG, minutes sampling + ADR 0005
+### N1. Simulation core: inputs, config, RNG, minutes sampling + ADR 0005 — ✅ DONE (2026-07-07)
 - **Files:** new `football_analytics/simulation.py`, new `tests/test_simulation.py`, new `docs/adr/0005-fixture-simulation-design.md`.
 - **Depends on:** K5, M1 (needs `p_plays`, `expected_minutes_if_plays`, `alpha_team` tags).
 - **Required behavior:**
@@ -266,6 +266,7 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
   - All randomness via one `numpy.random.Generator(seed)`; identical seed + inputs ⇒ bit-identical outputs (unit-tested).
   - ADR 0005 records the §2.4 design, the three v1 simplifications and their revisit triggers, and the identity approximations (saves identity ignores own goals / red-card feedback).
 - **Acceptance criteria:** module imports without Spark/MLflow; deterministic under seed; input validation errors are specific (missing target, <11 starters, zero exposure).
+- **Implementation notes:** `SimulationInputs.players` carries one `rate90_<target>` column per target, recovered from `predicted_mean / (expected_minutes/90)` — round-trip verified for bench players (blended mean ÷ blended exposure = clean per-90 rate). Pre-K5 prediction rows degrade to deterministic minutes (`p_plays=1`, `if_plays=expected_minutes`). `alpha_team` arrives as a plain dict (read from M1 version tags by the notebook) so the module stays MLflow-free. ADR 0005 records the full sampling design and six v1 simplifications with revisit triggers, including one added during implementation: assist allocation does not exclude the goal scorer (team invariants unaffected).
 
 ### N2. Team totals + multinomial allocation
 - **Files:** `football_analytics/simulation.py`, `tests/test_simulation.py`.
