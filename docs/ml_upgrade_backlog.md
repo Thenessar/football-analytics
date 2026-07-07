@@ -207,7 +207,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
 
 ## Epic M — Model Family Upgrades (fixes D-2; decisions gated on Epic L evidence)
 
-### M1. Negative-binomial dispersion (two-stage) for probabilities and simulation
+### M1. Negative-binomial dispersion (two-stage) for probabilities and simulation — ✅ DONE (2026-07-07)
 - **Files:** `football_analytics/ml_training.py`, `football_analytics/inference.py`, `tests/test_inference.py`, new tests.
 - **Depends on:** L1 (dispersion_index motivates and validates α).
 - **Required behavior:**
@@ -216,6 +216,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - Both α values: logged as MLflow params (`{target}_alpha_player`, `{target}_alpha_team`), stored as model-version **tags** on the registered model, and carried in `ExposurePoissonLightGBMModel` / `LoadedEventModel` (default 0.0 = Poisson for old versions).
   - `count_threshold_probabilities` gains an optional `alpha` parameter: NB pmf (`p_ge_k` via the NB survival function, numpy/scipy-free implementation with lgamma) when `alpha > 0`, Poisson otherwise. `build_prediction_records` passes each model's `alpha_player`.
 - **Acceptance criteria:** unit tests: α̂ = 0 recovered on Poisson-simulated data, α̂ ≈ truth on NB-simulated data (tolerance); NB `p_ge_k` matches scipy.stats.nbinom on a reference case (hardcoded expected values, no scipy runtime dependency); Poisson path bit-identical to current behavior when α = 0.
+- **Implementation notes:** estimators in `evaluation.py` (`estimate_nb_alpha`, `estimate_team_total_nb_alpha` — the team version fits on fixture/team sums, validated against a shared-gamma-factor simulation where α_team ≈ 1/shape while player-level α stays near 0). Training fits both per target *before* the metric suite and passes `alpha_player` into it, so RPS/Brier/ECE score the distribution actually served. α values: MLflow params + model-version tags (set after registration via `ModelInfo.registered_model_version`); loader reads tags with a 0.0 default so pre-M1 versions stay exact-Poisson. NB reference case: mu=2, α=0.5 ⇒ r=2, p=½ ⇒ P(≥1)=0.75, P(≥2)=0.5, P(≥6)=1/16 exactly. One test taught us the tail crossover is past the mean — NB has *less* mass than Poisson at k=3 for mu=2 (more zeros), and only fattens the deep tail; the test documents this.
 
 ### M2. Self-contained pyfunc model wrapper (kill the duplicated exposure/gating logic)
 - **Files:** `football_analytics/ml_training.py` (registration path), `football_analytics/inference.py` (loading path), `tests/test_inference.py`.

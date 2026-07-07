@@ -143,6 +143,50 @@ def threshold_calibration(
     return {"brier": brier, "ece": float(ece), "reliability": pd.DataFrame(rows)}
 
 
+def estimate_nb_alpha(y_true: Iterable[float], mu: Iterable[float]) -> float:
+    """Method-of-moments NB dispersion: Var = mu + alpha*mu^2 (backlog M1).
+
+    ``alpha_hat = max(0, sum((y - mu)^2 - mu) / sum(mu^2))`` — zero recovers
+    Poisson; the estimator is consistent when the conditional mean is right.
+    """
+
+    y = _as_float_array(y_true)
+    mu_arr = np.clip(_as_float_array(mu), _MIN_MU, None)
+    if len(y) == 0:
+        return 0.0
+    denominator = float(np.sum(mu_arr ** 2))
+    if denominator <= 0.0:
+        return 0.0
+    numerator = float(np.sum((y - mu_arr) ** 2 - mu_arr))
+    return max(0.0, numerator / denominator)
+
+
+def estimate_team_total_nb_alpha(
+    frame: pd.DataFrame,
+    *,
+    y_true: Iterable[float],
+    mu: Iterable[float],
+    group_cols: Sequence[str] = ("fixture_id", "team_id"),
+) -> float:
+    """NB dispersion of TEAM TOTALS: sums y and mu per group, then fits alpha.
+
+    This is the dispersion the fixture simulator uses for its team-total
+    draws (backlog §2.4) — team totals are usually more overdispersed than
+    player counts because within-team correlation accumulates.
+    """
+
+    if not set(group_cols).issubset(frame.columns) or len(frame) == 0:
+        return 0.0
+    grouped = pd.DataFrame({
+        "__y__": _as_float_array(y_true),
+        "__mu__": _as_float_array(mu),
+    })
+    for col in group_cols:
+        grouped[col] = frame[col].to_numpy()
+    totals = grouped.groupby(list(group_cols))[["__y__", "__mu__"]].sum()
+    return estimate_nb_alpha(totals["__y__"], totals["__mu__"])
+
+
 def dispersion_index(y_true: Iterable[float], mu: Iterable[float]) -> float:
     """Mean squared Pearson residual: ~1 under Poisson, >1 when overdispersed."""
 

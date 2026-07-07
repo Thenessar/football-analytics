@@ -49,7 +49,12 @@ class MissingLineupError(RuntimeError):
 
 @dataclass(frozen=True)
 class LoadedEventModel:
-    """A registered per-target model plus the metadata predictions must carry."""
+    """A registered per-target model plus the metadata predictions must carry.
+
+    ``alpha_player``/``alpha_team`` are the M1 negative-binomial dispersions
+    read from the registered version's tags; 0.0 (pre-M1 versions) means
+    Poisson.
+    """
 
     target_event: str
     booster: Any
@@ -58,6 +63,8 @@ class LoadedEventModel:
     model_version: str
     model_stage_or_alias: Optional[str] = None
     goalkeeper_only: bool = False
+    alpha_player: float = 0.0
+    alpha_team: float = 0.0
 
 
 def fixture_has_confirmed_starting_xi(feature_rows: pd.DataFrame) -> bool:
@@ -191,7 +198,9 @@ def build_prediction_records(
 
         for index, row in enumerate(enriched.itertuples()):
             probabilities = count_threshold_probabilities(
-                means[index], thresholds=tuple(thresholds)
+                means[index],
+                thresholds=tuple(thresholds),
+                alpha=model.alpha_player,
             )
             records.append({
                 "prediction_set_id": prediction_set_id,
@@ -264,6 +273,9 @@ def load_registered_event_models(
             version = max(int(entry.version) for entry in versions)
             model_uri = f"models:/{model_name}/{version}"
         booster = mlflow.lightgbm.load_model(model_uri)
+        # Dispersion tags set at registration (M1); absent on pre-M1
+        # versions, which then keep exact Poisson behavior.
+        version_tags = client.get_model_version(model_name, str(version)).tags or {}
         models.append(LoadedEventModel(
             target_event=target,
             booster=booster,
@@ -272,8 +284,17 @@ def load_registered_event_models(
             model_version=str(version),
             model_stage_or_alias=alias,
             goalkeeper_only=target in GOALKEEPER_ONLY_TARGETS,
+            alpha_player=_tag_float(version_tags, "alpha_player"),
+            alpha_team=_tag_float(version_tags, "alpha_team"),
         ))
     return models
+
+
+def _tag_float(tags: Mapping[str, str], name: str, default: float = 0.0) -> float:
+    try:
+        return float(tags.get(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def ensure_player_event_predictions_table(spark, prediction_table: str) -> None:

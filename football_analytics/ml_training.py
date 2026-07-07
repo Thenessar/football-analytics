@@ -24,6 +24,8 @@ import pandas as pd
 # L1); poisson_log_loss is re-exported here for backward compatibility.
 from football_analytics.evaluation import (  # noqa: F401
     dispersion_index,
+    estimate_nb_alpha,
+    estimate_team_total_nb_alpha,
     poisson_log_loss,
     ranked_probability_score,
     validation_metric_suite,
@@ -241,13 +243,19 @@ class PoissonLightGBMConfig:
 
 @dataclass
 class ExposurePoissonLightGBMModel:
-    """Serializable wrapper that applies the exposure offset at prediction time."""
+    """Serializable wrapper that applies the exposure offset at prediction time.
+
+    ``alpha_player``/``alpha_team`` are the M1 negative-binomial dispersions
+    (player rows / team totals); 0.0 means Poisson.
+    """
 
     booster: Any
     feature_columns: list[str]
     target_column: str
     exposure_column: str = "games_minutes"
     goalkeeper_only: bool = False
+    alpha_player: float = 0.0
+    alpha_team: float = 0.0
 
     def predict_mean(self, frame: pd.DataFrame, exposure: Optional[Iterable[float]] = None) -> np.ndarray:
         X = frame[self.feature_columns]
@@ -265,7 +273,12 @@ class ExposurePoissonLightGBMModel:
         thresholds: Sequence[int] = (1, 2),
     ) -> list[Dict[str, float]]:
         means = self.predict_mean(frame)
-        return [count_threshold_probabilities(mean, thresholds=thresholds) for mean in means]
+        return [
+            count_threshold_probabilities(
+                mean, thresholds=thresholds, alpha=self.alpha_player
+            )
+            for mean in means
+        ]
 
 
 def exposure_from_minutes(minutes: Iterable[float]) -> np.ndarray:
@@ -299,14 +312,27 @@ def count_threshold_probabilities(
     mean_count: float,
     *,
     thresholds: Sequence[int] = (1, 2),
+    alpha: float = 0.0,
 ) -> Dict[str, float]:
-    """Returns Poisson mean and P(count >= k) threshold probabilities."""
+    """Returns the mean and P(count >= k) threshold probabilities.
+
+    ``alpha`` is the negative-binomial dispersion fitted in training (M1,
+    Var = mu + alpha*mu^2); 0 keeps the exact Poisson closed form used since
+    v1 so pre-M1 behavior is bit-identical.
+    """
 
     mu = max(float(mean_count), 0.0)
     probabilities = {"mean": mu}
     for threshold in thresholds:
         if threshold <= 0:
             probabilities[f"p_ge_{threshold}"] = 1.0
+            continue
+        if alpha and alpha > 0.0:
+            from football_analytics.evaluation import prob_at_least
+
+            probabilities[f"p_ge_{threshold}"] = float(
+                prob_at_least([mu], threshold, alpha=alpha)[0]
+            )
             continue
         cumulative = 0.0
         for i in range(threshold):
@@ -610,14 +636,6 @@ def train_poisson_lightgbm_with_mlflow(
                     f"{target}_best_iteration",
                     booster.best_iteration or cfg.num_boost_round,
                 )
-                model = ExposurePoissonLightGBMModel(
-                    booster=booster,
-                    feature_columns=selected_features,
-                    target_column=target,
-                    exposure_column=exposure_column,
-                    goalkeeper_only=target in GOALKEEPER_ONLY_TARGETS,
-                )
-
                 train_mu = np.exp(
                     booster.predict(X_train, raw_score=True) + np.log(train_exposure)
                 )
@@ -626,6 +644,27 @@ def train_poisson_lightgbm_with_mlflow(
                 )
                 train_metrics = evaluate_count_predictions(y_train, train_mu)
                 valid_metrics = evaluate_count_predictions(y_valid, valid_mu)
+
+                # Two-stage NB dispersion (M1): the booster provides the
+                # conditional mean; alpha is fitted on validation residuals
+                # at the player level (threshold probabilities) and on team
+                # totals (the simulator's team-total draws).
+                alpha_player = estimate_nb_alpha(y_valid, valid_mu)
+                alpha_team = estimate_team_total_nb_alpha(
+                    target_valid_df, y_true=y_valid, mu=valid_mu
+                )
+                mlflow.log_param(f"{target}_alpha_player", round(alpha_player, 6))
+                mlflow.log_param(f"{target}_alpha_team", round(alpha_team, 6))
+
+                model = ExposurePoissonLightGBMModel(
+                    booster=booster,
+                    feature_columns=selected_features,
+                    target_column=target,
+                    exposure_column=exposure_column,
+                    goalkeeper_only=target in GOALKEEPER_ONLY_TARGETS,
+                    alpha_player=alpha_player,
+                    alpha_team=alpha_team,
+                )
 
                 for metric_name, metric_value in train_metrics.items():
                     mlflow.log_metric(f"{target}_train_{metric_name}", metric_value)
@@ -644,6 +683,8 @@ def train_poisson_lightgbm_with_mlflow(
                     target=target,
                     train_exposure=train_exposure,
                     valid_exposure=valid_exposure,
+                    # Score the distribution actually served: NB when alpha>0.
+                    alpha=alpha_player,
                 )
                 for metric_name, metric_value in suite["metrics"].items():
                     if np.isfinite(metric_value):
@@ -722,6 +763,8 @@ def train_poisson_lightgbm_with_mlflow(
                         "registered_model_name": registered_model_name,
                         "input_example": input_example,
                         "signature": signature,
+                        "alpha_player": alpha_player,
+                        "alpha_team": alpha_team,
                     })
                 trained["models"][target] = model
                 trained["metrics"][target] = {
@@ -741,7 +784,7 @@ def train_poisson_lightgbm_with_mlflow(
         with mlflow.start_run(run_name=f"register__{entry['target']}"):
             mlflow.log_param("training_run_id", training_run_id)
             mlflow.log_param("target_event", entry["target"])
-            mlflow.lightgbm.log_model(
+            model_info = mlflow.lightgbm.log_model(
                 entry["booster"],
                 **_lightgbm_log_model_kwargs(
                     mlflow.lightgbm.log_model,
@@ -751,6 +794,18 @@ def train_poisson_lightgbm_with_mlflow(
                     signature=entry["signature"],
                 ),
             )
+        # Dispersion travels with the registered version as tags so inference
+        # and the simulator read it from the registry, not from code (M1).
+        registered_version = getattr(model_info, "registered_model_version", None)
+        if registered_version is not None:
+            client = mlflow.MlflowClient()
+            for tag_name in ("alpha_player", "alpha_team"):
+                client.set_model_version_tag(
+                    entry["registered_model_name"],
+                    str(registered_version),
+                    tag_name,
+                    str(round(entry[tag_name], 6)),
+                )
         trained["registered_models"][entry["target"]] = entry["registered_model_name"]
 
     return trained
