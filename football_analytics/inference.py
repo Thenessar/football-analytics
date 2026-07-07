@@ -337,6 +337,35 @@ def _tag_float(tags: Mapping[str, str], name: str, default: float = 0.0) -> floa
         return default
 
 
+def load_team_dispersion_tags(
+    model_versions: Mapping[str, tuple[str, str]],
+    *,
+    client: Any = None,
+) -> dict[str, float]:
+    """Reads `alpha_team` tags for the given {target: (name, version)} map.
+
+    This is the simulator's cheap dispersion read path (M1/N1): it does not
+    load model artifacts. Targets whose tags are missing or unreadable fall
+    back to 0.0 (Poisson team totals).
+    """
+
+    if client is None:
+        import mlflow
+        from mlflow import MlflowClient
+
+        mlflow.set_registry_uri("databricks-uc")
+        client = MlflowClient()
+
+    alphas: dict[str, float] = {}
+    for target, (model_name, model_version) in model_versions.items():
+        try:
+            tags = client.get_model_version(model_name, str(model_version)).tags or {}
+        except Exception:
+            tags = {}
+        alphas[str(target)] = _tag_float(tags, "alpha_team")
+    return alphas
+
+
 def ensure_player_event_predictions_table(spark, prediction_table: str) -> None:
     """Creates the §15.2/§15.3 prediction Delta table when missing.
 

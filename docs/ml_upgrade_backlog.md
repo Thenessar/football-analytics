@@ -302,13 +302,14 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
 - **Acceptance criteria:** unit test round-trips a small simulation through summarize → writer against the fake-Spark harness used in `test_prediction_write_appends_and_flips_older_active_sets`.
 - **Implementation notes:** the Option C write strategy was extracted into `football_analytics/delta_write.py` (`write_active_flag_records` — parameterized set-id column, flip keys, and flag column); `write_player_event_predictions` now delegates to it with its exact SQL contract preserved (existing tests unchanged and green). Scoreline lives on ONE fixture-level row (`entity_type='fixture'`, `target_event='scoreline'`, matrix JSON keyed `goalsA-goalsB`) rather than duplicated per team. Summary test also asserts the allocation identity — each team's `sim_mean` equals the sum of its players' means to 1e-9. Sim table pre-created in `notebooks/00_prepare_run.py` next to the prediction table so the new dbt source tests never hit a missing table.
 
-### N5. Notebook 05 + job wiring
+### N5. Notebook 05 + job wiring — ✅ DONE (2026-07-07)
 - **Files:** new `notebooks/05_fixture_simulation.py`, `resources/prematch_inference_pipeline.yml` (new task after `inference_predict`), `tests/test_databricks_bundle_and_config.py`.
 - **Depends on:** N4.
 - **Acceptance criteria:**
   - Notebook widgets: `fixture_id` (blank = all fixtures with an active prediction set in the trigger window), `n_sims`, `seed`, `mode`. Loads active predictions + expected-minutes decomposition, runs the simulator, writes via N4, and **displays the full game view**: per-team table (one row per player × columns per event with mean and P(≥1)), team totals with 5–95% intervals, and the scoreline probability matrix.
   - Job task `fixture_simulation` depends on `inference_predict`; skips cleanly (SKIPPED status row) when no active prediction set exists.
   - Bundle test asserts the task exists, its dependency, and parameter pass-through (pattern: `test_bundle_passes_statistics_toggle_to_bronze_ingest`).
+- **Implementation notes:** `mode` widget dropped from the notebook — the simulator's guard rail is the existence of an *active prediction set* (notebook 04 already enforced lineup rules before writing one), so a separate mode adds nothing. Dispersion tags are read per fixture for the exact model versions in that prediction set via `load_team_dispersion_tags` (`inference.py`; accepts an injectable client, falls back to Poisson totals when the registry is unreachable). `SimulationInputError` fixtures log `simulation_skipped_invalid_inputs` and continue. Job parameters `n_sims`/`sim_seed` added; `test_databricks_notebook_files_match_medallion_order` updated for the new notebook.
 
 ### N6. Historical backtest: simulation calibration report
 - **Files:** new `scripts/backtest_simulation.py`, `football_analytics/evaluation.py` (interval-coverage + PIT helpers), `tests/test_evaluation.py`.

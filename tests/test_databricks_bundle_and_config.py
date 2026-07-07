@@ -170,6 +170,26 @@ def test_prematch_inference_job_polls_the_lineup_trigger_window():
     assert 'default: "live"' in bundle
 
 
+def test_prematch_pipeline_simulates_fixtures_after_prediction():
+    bundle = (ROOT / "resources" / "prematch_inference_pipeline.yml").read_text(encoding="utf-8")
+
+    # The simulation task exists, runs after inference_predict, and receives
+    # its configuration through job parameters (ml_upgrade_backlog.md N5).
+    simulation_task = re.search(
+        r"- task_key: fixture_simulation\b(?P<task>.*?)(?=\n        - task_key:|\n      environments:|\Z)",
+        bundle,
+        flags=re.S,
+    )
+    assert simulation_task is not None
+    task = simulation_task.group("task")
+    assert "task_key: inference_predict" in task
+    assert "../notebooks/05_fixture_simulation.py" in task
+    assert 'n_sims: "{{job.parameters.n_sims}}"' in task
+    assert 'seed: "{{job.parameters.sim_seed}}"' in task
+    assert "- name: n_sims" in bundle
+    assert "- name: sim_seed" in bundle
+
+
 def test_bundle_passes_default_lookahead_to_notebook_tasks():
     bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
@@ -244,6 +264,7 @@ def test_databricks_notebook_files_match_medallion_order():
         "02_dbt_python_models.py",
         "03_prematch_inference_ingest.py",
         "04_prematch_inference_predict.py",
+        "05_fixture_simulation.py",
     ]
 
 

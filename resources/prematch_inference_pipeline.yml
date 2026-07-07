@@ -43,6 +43,10 @@ resources:
           default: ""
         - name: targets
           default: ""
+        - name: n_sims
+          default: "10000"
+        - name: sim_seed
+          default: "7"
         - name: api_rate_limit_per_minute
           default: ${var.api_rate_limit_per_minute}
 
@@ -92,6 +96,26 @@ resources:
               registered_model_prefix: "{{job.parameters.registered_model_prefix}}"
               model_alias: "{{job.parameters.model_alias}}"
               targets: "{{job.parameters.targets}}"
+          environment_key: notebook_serverless
+
+        # Monte Carlo full-game simulation from the active prediction set
+        # (ml_upgrade_backlog.md N5, ADR 0005). Skips cleanly when notebook 04
+        # produced no active set in the window.
+        - task_key: fixture_simulation
+          depends_on:
+            - task_key: inference_predict
+          notebook_task:
+            notebook_path: ../notebooks/05_fixture_simulation.py
+            base_parameters:
+              fixture_id: "{{job.parameters.fixture_id}}"
+              window_minutes: "{{job.parameters.window_minutes}}"
+              n_sims: "{{job.parameters.n_sims}}"
+              seed: "{{job.parameters.sim_seed}}"
+              run_id: "{{job.run_id}}"
+              catalog: "{{job.parameters.catalog}}"
+              bronze_schema: "{{job.parameters.bronze_schema}}"
+              silver_schema: "{{job.parameters.silver_schema}}"
+              gold_schema: "{{job.parameters.gold_schema}}"
           environment_key: notebook_serverless
 
       environments:
