@@ -117,6 +117,19 @@ models:
       and the segment's date range. Dashboarding on top is a follow-up; this
       view is the queryable check required by backlog I2.
 
+  - name: mon_football__prediction_calibration
+    description: >
+      Production calibration curves: predicted P(>=1)/P(>=2) versus empirical
+      frequency in 0.1 probability bins, per target_event / position_group /
+      model_version. Live counterpart of the training reliability artifacts.
+
+  - name: mon_football__prediction_ranking
+    description: >
+      Within-fixture ranking quality on live predictions: top-1 leader hit
+      rate per target_event / model_version / league. Team-fixtures with no
+      occurrences of the event are excluded from the rate and counted
+      separately.
+
   - name: mon_football__expected_minutes_accuracy
     description: >
       Expected-minutes estimator accuracy over completed fixtures (one row

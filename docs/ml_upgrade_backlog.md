@@ -197,10 +197,11 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
 - **Acceptance criteria:** a mode that scores the two naive baselines through the identical fold harness and logs them under run name `baseline-reference`, so every model run's skill scores have an inspectable denominator run. No model training, no registration.
 - **Implementation notes:** `run_baseline_reference` in `ml_training.py` (lightgbm never imported on this path). Test asserts the player-L5 baseline beats the position-group baseline on synthetic data where per-player rates are the true signal — a sanity check that the two baselines are genuinely different reference points.
 
-### L5. Extend prediction monitoring with calibration & ranking views
+### L5. Extend prediction monitoring with calibration & ranking views — ✅ DONE (2026-07-07)
 - **Files:** `dbt/models/marts/mon_football__prediction_monitoring.sql` (extend) or new `mon_football__prediction_calibration.sql` (+ schema.yml).
 - **Depends on:** K5 (columns), otherwise independent of L1–L4.
 - **Acceptance criteria:** post-match monitoring surfaces, per target × position group × model version: empirical vs predicted P(≥1)/P(≥2) in probability bins (production calibration curve data) and the top-1 leader hit rate per fixture-team. Views stay empty-but-queryable with no predictions.
+- **Implementation notes:** two new views over `mon_football__prediction_vs_actual` (which already joins active predictions to realized labels): `mon_football__prediction_calibration` (0.1-wide bins via `stack` over both thresholds, includes `calibration_gap`) and `mon_football__prediction_ranking` (top-1 leader hit rate with deterministic `player_id` tie-break, all-zero team-fixtures counted separately). Kept separate from `mon_football__prediction_monitoring` because the grains differ (probability bins / team-fixtures vs segment aggregates).
 
 ---
 
