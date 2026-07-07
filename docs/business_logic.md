@@ -489,6 +489,24 @@ expected_minutes_l5_trimmed_or_median
 
 Keep the final method as an explicit open decision until validated.
 
+### 12.4 Adopted Estimator (v2, 2026-07-07)
+
+The role-blind trimmed mean above is superseded by the **role-conditional
+decomposition** (ADR 0004, `fct_football__player_expected_minutes`):
+
+```text
+expected_minutes = p_plays * expected_minutes_if_plays
+```
+
+conditioned on the player's role in TODAY'S confirmed lineup: starters draw
+on their last 5 prior starts (`p_plays = 1`), bench players on their last 10
+prior bench namings including unused-sub zeros, both shrunk toward priors
+calibrated from production history (starter 80', bench participation 0.40,
+bench cameo 23'). This fixes the defect where a regular starter named on the
+bench kept a ~90-minute estimate. The decomposition columns flow through the
+feature mart and prediction table for the simulation layer (§20), and
+estimator accuracy is monitored in `mon_football__expected_minutes_accuracy`.
+
 ## 13. ML Training
 
 ### 13.1 Goal
@@ -543,6 +561,22 @@ Potential improvements:
 - Position-group-specific models.
 - Multi-task models sharing representations between related targets.
 - Calibration layer for probability thresholds.
+
+Adopted since 2026-07-07 (ml_upgrade_backlog.md Epics L/M):
+
+- **Two-stage negative binomial:** the LightGBM Poisson booster provides the
+  conditional mean; per-target dispersions (`alpha_player` for threshold
+  probabilities, `alpha_team` for the simulator's team totals) are fitted on
+  validation residuals and travel as registry version tags.
+- **Self-contained registered models:** each `<prefix>__<target>` version is
+  an mlflow.pyfunc artifact wrapping the booster plus exposure semantics,
+  feature columns, goalkeeper gating, and dispersion.
+- **Evaluation:** ranked probability score, Brier/ECE calibration,
+  dispersion index, skill scores against naive baselines (position-group
+  rate, player L5), within-fixture ranking metrics, and a rolling-origin
+  multi-season backtest harness (`--backtest` / `--baselines-only` modes of
+  `scripts/train_poisson_lgbm.py`). Model-family changes require backtest
+  evidence.
 
 ### 13.4 Training Labels
 
@@ -742,6 +776,17 @@ Future monitoring should track:
 - missing expected-minutes estimates,
 - model version currently active.
 
+Implemented monitoring views (dbt, empty-but-queryable before data lands):
+
+- `mon_football__prediction_vs_actual` — row-level joined actuals.
+- `mon_football__prediction_monitoring` — segment aggregates.
+- `mon_football__prediction_coverage` — per-fixture lineup/prediction coverage.
+- `mon_football__prediction_calibration` — live P(>=k) reliability bins.
+- `mon_football__prediction_ranking` — top-1 leader hit rates.
+- `mon_football__expected_minutes_accuracy` — minutes estimator accuracy and
+  bench participation calibration.
+- `mon_football__simulation_vs_actual` — simulation vs realized outcomes.
+
 ## 17. Roadmap For Future Agents
 
 Future agents should prioritize work in this order:
@@ -762,15 +807,17 @@ Future agents should prioritize work in this order:
 
 | Area | Files |
 | --- | --- |
-| Databricks Bundle | `databricks.yml`, `resources/international_medallion_pipeline.yml` |
-| Databricks notebooks | `notebooks/00_prepare_run.py`, `notebooks/01_bronze_ingest.py`, `notebooks/02_dbt_python_models.py` |
+| Databricks Bundle | `databricks.yml`, `resources/international_medallion_pipeline.yml`, `resources/prematch_inference_pipeline.yml` |
+| Databricks notebooks | `notebooks/00_prepare_run.py`, `notebooks/01_bronze_ingest.py`, `notebooks/02_dbt_python_models.py`, `notebooks/03_prematch_inference_ingest.py`, `notebooks/04_prematch_inference_predict.py`, `notebooks/05_fixture_simulation.py` |
 | Bronze ingestion | `football_analytics/databricks_ingestion.py`, `football_analytics/api/client.py` |
 | Scope validation | `football_analytics/quality/validators.py`, `football_analytics/league_scope.py` |
 | dbt Silver | `dbt/models/staging/*` |
 | dbt Gold | `dbt/models/marts/*` |
 | dbt seeds | `dbt/seeds/*` |
 | ML training | `football_analytics/ml_training.py`, `scripts/train_poisson_lgbm.py` |
-| Simulation and reports | `football_analytics/modeling.py`, `football_analytics/orchestrator.py`, `football_analytics/reporting.py`, `run_pipeline.py` |
+| Evaluation | `football_analytics/evaluation.py` |
+| Inference | `football_analytics/inference.py`, `football_analytics/delta_write.py` |
+| Fixture simulation | `football_analytics/simulation.py`, `football_analytics/simulation_backtest.py`, `scripts/backtest_simulation.py` |
 
 ## 19. Non-Negotiable Design Principles
 
@@ -785,3 +832,31 @@ Future changes should follow these principles:
 - Model metadata must be stored with predictions.
 - The prediction table must prevent duplicate active records for the same fixture/player/target/model/version.
 - All model improvements should be evaluated chronologically, not randomly, because football data is time-dependent.
+
+## 20. Fixture Simulation
+
+Since 2026-07-07 the pipeline produces a coherent Monte Carlo full-game view
+per fixture (ml_upgrade_backlog.md Epic N, design in
+`docs/adr/0005-fixture-simulation-design.md`).
+
+- **Inputs:** the ACTIVE prediction set (§15) — per-90 intensities recovered
+  from `predicted_mean / expected_exposure` — plus the ADR 0004 minutes
+  decomposition and the `alpha_team` dispersion tags from the registered
+  model versions. The simulator never calls models directly.
+- **Sampling:** bench participation ~ Bernoulli(p_plays); NB team totals
+  allocated to players multinomially; structural chains keep every draw
+  coherent (player goals <= shots on target <= shots; team A fouls committed
+  = team B fouls drawn; goalkeeper saves = opponent on-target shots minus
+  goals; assists <= goals; card caps).
+- **Output:** `gold.sim_football__fixture_simulation` — grain
+  `fixture_id / sim_set_id / entity_type (player|team|fixture) / entity_id /
+  target_event`, with means, percentiles, P(>=k), lineage
+  (`prediction_set_id`, engine version, seed), Option C active-flag
+  semantics, and the scoreline probability matrix on the fixture row.
+- **Jobs:** `fixture_simulation` task in `prematch_inference_pipeline`
+  (notebook `05_fixture_simulation.py`), running after `inference_predict`.
+- **Validation:** `scripts/backtest_simulation.py` replays a holdout season
+  and scores interval coverage, randomized-PIT uniformity, and leader
+  allocation hit rates; targets whose 80% coverage leaves [70, 90] feed the
+  ADR 0005 revisit triggers.
+

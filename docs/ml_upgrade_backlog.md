@@ -318,10 +318,11 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
 - **Acceptance criteria:** one artifact report (JSON + CSV) with the above; ticket notes record the numbers and flag any target whose 80% coverage falls outside [70, 90] as input for the ADR 0005 revisit triggers.
 - **Implementation notes:** core in `football_analytics/simulation_backtest.py` (pure given models + feature rows; reuses `build_prediction_records` with `lineup_source='offline_sample'` and reads `alpha_team` straight off the models); thin Spark/MLflow wiring in `scripts/backtest_simulation.py` with the `outside_acceptance_band` flag computed per target. Coverage/PIT primitives (`central_interval_coverage`, `randomized_pit`, `pit_uniformity_summary`) live in `evaluation.py`. The test suite validates the *scoring pipeline itself*: in a synthetic world where labels follow the models' rates exactly, Poisson-thinning makes simulated player marginals exactly Poisson, so the test asserts nominal interval coverage and PIT uniformity (max bin deviation < 0.07) — a true end-to-end calibration check, not just shape assertions. ⚠️ The real holdout-season run still needs Databricks (daily quota exhausted today); run `scripts/backtest_simulation.py --season <N>` and record the numbers here.
 
-### N7. Documentation sync for simulation
+### N7. Documentation sync for simulation — ✅ DONE (2026-07-07)
 - **Files:** `docs/business_logic.md` (new §20 "Fixture Simulation", §12 update for minutes v2, §13.3/§16.3 updates for NB + new metrics), this file.
 - **Depends on:** N5 (land after the feature works), K3, M1.
 - **Acceptance criteria:** business_logic.md documents: simulation inputs/outputs/table grain, the coherence rules, the v1 simplifications + revisit triggers (red-card feedback trigger: N6 shows card-heavy fixtures with systematically over-predicted minutes-driven events; tempo-factor trigger: N6 team-total coverage too narrow on ≥3 targets; team-total-model trigger: N6 team-total bias non-zero on ≥3 targets). Monitoring section lists the new `mon_` views.
+- **Implementation notes:** business_logic.md gains §12.4 (adopted role-conditional estimator), §13.3 addendum (NB two-stage, pyfunc artifacts, evaluation harness), §16.3 implemented-monitoring list, §20 Fixture Simulation (pointing to ADR 0005 for the simplification/revisit-trigger detail rather than duplicating it), and a refreshed §18 repo map. Section 19 numbering left untouched — existing code comments cite §19.
 
 ---
 
