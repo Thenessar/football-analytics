@@ -190,13 +190,16 @@ def test_prematch_pipeline_simulates_fixtures_after_prediction():
     assert "- name: sim_seed" in bundle
 
 
-def test_bundle_passes_default_lookahead_to_notebook_tasks():
+def test_bundle_passes_default_ingestion_window_to_notebook_tasks():
     bundle_config = (ROOT / "databricks.yml").read_text(encoding="utf-8")
     bundle = (ROOT / "resources" / "international_medallion_pipeline.yml").read_text(encoding="utf-8")
 
     assert "lookahead_days:" in bundle_config
     assert "default: \"7\"" in bundle_config
     assert "default: ${var.lookahead_days}" in bundle
+    assert "lookback_days:" in bundle_config
+    assert "default: \"2\"" in bundle_config
+    assert "default: ${var.lookback_days}" in bundle
 
     for task_name in ("prepare_run", "bronze_ingest"):
         match = re.search(
@@ -206,6 +209,7 @@ def test_bundle_passes_default_lookahead_to_notebook_tasks():
         )
         assert match is not None
         assert 'lookahead_days: "{{job.parameters.lookahead_days}}"' in match.group("task")
+        assert 'lookback_days: "{{job.parameters.lookback_days}}"' in match.group("task")
 
 
 def test_bundle_installs_project_wheel_for_serverless_notebook_tasks():

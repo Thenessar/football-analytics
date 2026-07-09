@@ -73,7 +73,7 @@ def test_default_ingestion_dates_use_last_checkpoint_through_lookahead(monkeypat
     assert selection.mode == "checkpoint_to_lookahead"
 
 
-def test_default_ingestion_dates_fall_back_to_today_without_checkpoint(monkeypatch):
+def test_default_ingestion_dates_fall_back_to_lookback_without_checkpoint(monkeypatch):
     monkeypatch.setattr(
         ingestion,
         "latest_completed_checkpoint_date",
@@ -83,6 +83,8 @@ def test_default_ingestion_dates_fall_back_to_today_without_checkpoint(monkeypat
     selection = ingestion.resolve_ingestion_dates(None, today="2026-06-27")
 
     assert selection.dates == (
+        "2026-06-25",
+        "2026-06-26",
         "2026-06-27",
         "2026-06-28",
         "2026-06-29",
@@ -101,9 +103,30 @@ def test_default_ingestion_dates_use_configured_lookahead(monkeypatch):
         lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE, max_target_date=None: None,
     )
 
-    selection = ingestion.resolve_ingestion_dates(None, today="2026-06-27", lookahead_days=2)
+    selection = ingestion.resolve_ingestion_dates(
+        None, today="2026-06-27", lookahead_days=2, lookback_days=0
+    )
 
     assert selection.dates == ("2026-06-27", "2026-06-28", "2026-06-29")
+
+
+def test_default_ingestion_dates_revisit_recent_completed_dates(monkeypatch):
+    monkeypatch.setattr(
+        ingestion,
+        "latest_completed_checkpoint_date",
+        lambda spark, *, checkpoint_table=ingestion.INGESTION_STATE_CHECKPOINT_TABLE, max_target_date=None: "2026-06-27",
+    )
+
+    selection = ingestion.resolve_ingestion_dates(
+        object(), today="2026-06-27", lookahead_days=1, lookback_days=2
+    )
+
+    assert selection.dates == (
+        "2026-06-25",
+        "2026-06-26",
+        "2026-06-27",
+        "2026-06-28",
+    )
 
 
 def test_default_checkpoint_lookup_ignores_future_target_dates(monkeypatch):

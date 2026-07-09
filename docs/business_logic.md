@@ -210,7 +210,8 @@ PST, CANC, ABD, AWD, WO
 
 **Fixtures**
 
-- Load for the latest run start date to current date + lookahead days range or every selected date/range
+- Load the checkpoint catch-up range plus a rolling recent lookback window
+  through current date + lookahead days, or every selected date/range.
 - Required for all downstream context.
 
 **Player statistics**

@@ -38,6 +38,7 @@ FIXTURE_STATE_LINEUPS_CONFIRMED = "LINEUPS_CONFIRMED"
 FIXTURE_STATE_LIVE = "LIVE"
 FIXTURE_STATE_COMPLETED = "COMPLETED"
 DEFAULT_LOOKAHEAD_DAYS = 7
+DEFAULT_LOOKBACK_DAYS = 2
 FIXTURES_ENDPOINT = "fixtures"
 PLAYER_STATS_ENDPOINT = "fixtures/players"
 LINEUPS_ENDPOINT = "fixtures/lineups"
@@ -161,8 +162,9 @@ def resolve_ingestion_dates(
     checkpoint_table: str = INGESTION_STATE_CHECKPOINT_TABLE,
     today: Optional[str] = None,
     lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
 ) -> IngestionDateSelection:
-    """Resolves manual date overrides or the default checkpoint-to-lookahead range."""
+    """Resolves manual date overrides or the default rolling ingestion range."""
     if target_date:
         return IngestionDateSelection((target_date,), "target_date")
     if date_from or date_to:
@@ -172,12 +174,15 @@ def resolve_ingestion_dates(
 
     today_date = date.fromisoformat(today) if today else date.today()
     lookahead_days = max(0, int(lookahead_days))
+    lookback_days = max(0, int(lookback_days))
+    lookback_start = today_date - timedelta(days=lookback_days)
     end_date = (today_date + timedelta(days=lookahead_days)).isoformat()
-    start_date = latest_completed_checkpoint_date(
+    checkpoint_start = latest_completed_checkpoint_date(
         spark,
         checkpoint_table=checkpoint_table,
         max_target_date=today_date.isoformat(),
     ) or today_date.isoformat()
+    start_date = min(date.fromisoformat(checkpoint_start), lookback_start).isoformat()
     if date.fromisoformat(start_date) > date.fromisoformat(end_date):
         start_date = end_date
     return IngestionDateSelection(
@@ -1861,6 +1866,7 @@ def ingest_senior_mens_international_bronze(
     include_lineups: bool = True,
     include_statistics: bool = True,
     lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     required_fixture_ids: Optional[Iterable[int]] = None,
     bronze_fixtures_path: str = BRONZE_FIXTURES_RAW_PATH,
     bronze_eligibility_path: str = BRONZE_FIXTURES_ELIGIBILITY_PATH,
@@ -1880,6 +1886,7 @@ def ingest_senior_mens_international_bronze(
         date_to=date_to,
         checkpoint_table=checkpoint_table,
         lookahead_days=lookahead_days,
+        lookback_days=lookback_days,
     )
     dates = list(date_selection.dates)
 

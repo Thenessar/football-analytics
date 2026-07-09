@@ -34,6 +34,9 @@ variables:
   lookahead_days:
     description: Default run lookahead window in days beyond the current UTC date.
     default: "7"
+  lookback_days:
+    description: Default rolling refresh window in days before the current UTC date.
+    default: "2"
   schedule_pause_status:
     description: Use PAUSED for dev and UNPAUSED when production scheduling is ready.
     default: PAUSED
