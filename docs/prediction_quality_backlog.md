@@ -39,7 +39,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | --- | --- | --- | --- | --- |
 | FA-101 | P1 — Current player-Elo state for future fixtures | Ledger | — | ✅ DONE (2026-07-10) |
 | FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ✅ DONE (2026-07-10) |
-| FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ⬜ TODO |
+| FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ✅ DONE (2026-07-10) |
 | FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | ⬜ TODO |
 | FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ⬜ TODO |
 | FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | ⬜ TODO |
@@ -81,6 +81,13 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
 - **Files:** `football_analytics/evaluation.py` or `ml_training.py` (backtest row degradation helper), `scripts/train_poisson_lgbm.py` (`--serving-parity` flag).
 - **Required behavior:** backtest mode that transforms validation rows into *serving-shaped* rows before scoring — apply the same joins/coalesces the mart applies to non-completed fixtures (post-FA-101 this means: current-state Elo instead of fixture-exact, everything else identical). Report the paired delta (`training-shaped` vs `serving-shaped`) per target for the headline metrics (RPS, rank_spearman, top1, skill scores) as one artifact. Pre-FA-101 this delta is the measured cost of the bug; post-FA-101 it must be ≈ 0 and stays as a regression gate. MLflow quota discipline per Working Agreement #4 (scalars = cross-fold means only; tables to artifacts).
 - **Acceptance criteria:** unit test proves the degradation helper reproduces the mart's inference-row coalesce semantics on a fixture with known values; parity delta ≈ 0 post-FA-101 asserted on synthetic data and documented as the standing regression gate; backtest artifact includes the paired-delta table.
+- **Implementation notes (2026-07-10):**
+  - `degrade_rows_to_serving_shape` (ml_training.py): modifiers/`missed_fixture_count_pre` pass through with the mart's 0-coalesce; `player_*_elo_pre`/`player_*_rating_pre` rebuilt as team baseline + modifier (the serving formula); interaction features recomputed from the rebuilt bases via `add_model_interaction_features`; labels/exposure/rolling windows untouched. Post-FA-101 the transform is an identity on self-consistent mart rows.
+  - `run_rolling_origin_backtest(serving_parity=True)`: each fold's booster additionally scores serving-shaped validation rows; result gains `parity_report` (per season/target/metric: training_shaped, serving_shaped, delta) and `parity_summary` (cross-fold means + fold counts). Full metric superset is paired, which covers the headline set (RPS, rank_spearman, top1, skill scores).
+  - `scripts/train_poisson_lgbm.py --backtest --serving-parity`: parity tables land as `serving_parity_report.csv/json` + `serving_parity_summary.csv` in the same backtest artifact folder; no new MLflow metrics (quota discipline — only a `serving_parity` param is logged).
+  - Tests: helper-semantics test on known values incl. the no-Elo-history coalesce; **standing regression gate** `test_serving_parity_backtest_reports_zero_delta_on_consistent_features` (delta < 1e-9 on self-consistent synthetic data); an E-5 replica proving a nonzero RPS delta when the model leans on a feature serving cannot rebuild.
+  - Scope note: the transform covers the player-Elo family exactly as the ticket pre-committed ("everything else identical"). The known residual serving skew in `team_lineup_attack/defense_strength` (see FA-101 notes) is deliberately NOT degraded here so the delta gate stays ≈ 0; when the lineup-strength follow-up lands in FA-104, extend the helper and keep the gate.
+  - The production parity run (real-data delta table on the Databricks feature table) rides with the FA-104 backtest / FA-107 verification, same quota batch.
 
 ### P2b / FA-103. `mon_football__inference_feature_health` monitor (guards the class)
 - **Jira:** FA-103 · Story · Priority High · 3 pts · Labels `dbt`, `monitoring` · Depends on nothing (start in parallel with FA-101; assertions get stricter after it lands).

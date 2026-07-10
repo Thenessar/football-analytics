@@ -918,6 +918,56 @@ def season_train_validation_split(
     return train, validation
 
 
+def _serving_shape_series(frame: pd.DataFrame, column: str, default: float) -> pd.Series:
+    """Column as float series with the mart's coalesce default applied."""
+
+    if column in frame.columns:
+        return pd.to_numeric(frame[column], errors="coerce").fillna(default)
+    return pd.Series(default, index=frame.index, dtype=float)
+
+
+def degrade_rows_to_serving_shape(frame: pd.DataFrame) -> pd.DataFrame:
+    """Reshapes completed-fixture rows the way the mart shapes inference rows.
+
+    Serving-parity backtest helper (prediction_quality_backlog FA-102):
+    reproduces the inference-row coalesce semantics of
+    ``fct_football__player_event_features`` post-FA-101 — the player-Elo
+    family is rebuilt from the current-state join instead of the fixture-exact
+    one. For a played appearance the current-state modifier equals the
+    fixture-exact modifier, so:
+
+    - ``player_offensive_modifier_pre`` / ``player_defensive_modifier_pre``
+      and ``missed_fixture_count_pre`` keep their values (coalesced to 0 when
+      missing, as the mart does for players without Elo history);
+    - ``player_*_elo_pre`` / ``player_*_rating_pre`` are recomputed as team
+      baseline + modifier, the exact serving-time formula;
+    - interaction features derived from the family are recomputed from the
+      degraded bases; everything else (labels, exposure, rolling windows)
+      stays byte-identical.
+
+    Post-FA-101 this transform is an identity on self-consistent mart rows —
+    the paired backtest delta must be ~0, and a nonzero delta is a serving-skew
+    regression (the E-5 class).
+    """
+
+    out = frame.copy()
+    offensive_modifier = _serving_shape_series(out, "player_offensive_modifier_pre", 0.0)
+    defensive_modifier = _serving_shape_series(out, "player_defensive_modifier_pre", 0.0)
+    team_attack = _serving_shape_series(out, "team_elo_attack_pre", 0.0)
+    team_defense = _serving_shape_series(out, "team_elo_defense_pre", 0.0)
+
+    out["player_offensive_modifier_pre"] = offensive_modifier
+    out["player_defensive_modifier_pre"] = defensive_modifier
+    out["missed_fixture_count_pre"] = (
+        _serving_shape_series(out, "missed_fixture_count_pre", 0.0).astype(int)
+    )
+    out["player_offensive_elo_pre"] = team_attack + offensive_modifier
+    out["player_defensive_elo_pre"] = team_defense + defensive_modifier
+    out["player_offensive_rating_pre"] = out["player_offensive_elo_pre"]
+    out["player_defensive_rating_pre"] = out["player_defensive_elo_pre"]
+    return add_model_interaction_features(out)
+
+
 def run_rolling_origin_backtest(
     frame: pd.DataFrame,
     *,
@@ -928,6 +978,7 @@ def run_rolling_origin_backtest(
     season_column: str = "league_season",
     min_train_seasons: int = 2,
     min_train_rows: int = 50,
+    serving_parity: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """Expanding-window chronological backtest (ml_upgrade_backlog.md L2).
 
@@ -938,6 +989,11 @@ def run_rolling_origin_backtest(
     - ``summary``: per target/metric mean and std across folds — the numbers
       every Epic M adoption decision must cite.
     - ``skipped``: season/target pairs that could not be scored and why.
+    - ``parity_report`` / ``parity_summary``: with ``serving_parity=True``,
+      each fold is additionally scored on serving-shaped validation rows
+      (``degrade_rows_to_serving_shape``) and the paired
+      training-shaped vs serving-shaped values land here per metric
+      (FA-102). The standing regression gate: deltas ~0 post-FA-101.
     """
 
     from football_analytics.evaluation import rolling_origin_folds, validation_metric_suite
@@ -947,6 +1003,7 @@ def run_rolling_origin_backtest(
 
     report_rows: list[Dict[str, Any]] = []
     skipped_rows: list[Dict[str, Any]] = []
+    parity_rows: list[Dict[str, Any]] = []
 
     for season, train_df, valid_df in rolling_origin_folds(
         frame, season_column=season_column, min_train_seasons=min_train_seasons
@@ -1013,6 +1070,39 @@ def run_rolling_origin_backtest(
                     "value": float(metric_value),
                 })
 
+            if serving_parity:
+                serving_valid = degrade_rows_to_serving_shape(target_valid)
+                X_serving, y_serving, serving_exposure = _prepare_xy(
+                    serving_valid,
+                    target_column=target,
+                    feature_columns=selected_features,
+                    exposure_column=exposure_column,
+                )
+                mu_serving = np.exp(
+                    booster.predict(X_serving, raw_score=True) + np.log(serving_exposure)
+                )
+                serving_metrics = dict(evaluate_count_predictions(y_serving, mu_serving))
+                serving_suite = validation_metric_suite(
+                    train_frame=target_train,
+                    valid_frame=serving_valid,
+                    y_valid=y_serving,
+                    mu_valid=mu_serving,
+                    target=target,
+                    train_exposure=train_exposure,
+                    valid_exposure=serving_exposure,
+                )
+                serving_metrics.update(serving_suite["metrics"])
+                for metric_name, training_value in metrics.items():
+                    serving_value = float(serving_metrics.get(metric_name, float("nan")))
+                    parity_rows.append({
+                        "season": season,
+                        "target": target,
+                        "metric": metric_name,
+                        "training_shaped": float(training_value),
+                        "serving_shaped": serving_value,
+                        "delta": serving_value - float(training_value),
+                    })
+
     report = pd.DataFrame(report_rows, columns=["season", "target", "metric", "value"])
     if report.empty:
         summary = pd.DataFrame(columns=["target", "metric", "mean", "std", "folds"])
@@ -1022,10 +1112,31 @@ def run_rolling_origin_backtest(
             .agg(mean="mean", std="std", folds="count")
             .reset_index()
         )
+    parity_columns = [
+        "season", "target", "metric", "training_shaped", "serving_shaped", "delta",
+    ]
+    parity_report = pd.DataFrame(parity_rows, columns=parity_columns)
+    if parity_report.empty:
+        parity_summary = pd.DataFrame(
+            columns=["target", "metric", "training_shaped", "serving_shaped", "delta", "folds"]
+        )
+    else:
+        parity_summary = (
+            parity_report.groupby(["target", "metric"])
+            .agg(
+                training_shaped=("training_shaped", "mean"),
+                serving_shaped=("serving_shaped", "mean"),
+                delta=("delta", "mean"),
+                folds=("delta", "count"),
+            )
+            .reset_index()
+        )
     return {
         "report": report,
         "summary": summary,
         "skipped": pd.DataFrame(skipped_rows, columns=["season", "target", "reason"]),
+        "parity_report": parity_report,
+        "parity_summary": parity_summary,
     }
 
 

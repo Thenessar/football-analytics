@@ -166,6 +166,17 @@ def parse_args() -> argparse.Namespace:
         help="Backtest mode: earliest validation season must have this many prior seasons.",
     )
     parser.add_argument(
+        "--serving-parity",
+        action="store_true",
+        help=(
+            "Backtest mode only: additionally score each fold on serving-shaped "
+            "validation rows (the mart's inference-row coalesce semantics) and "
+            "emit the paired training-vs-serving delta table as an artifact. "
+            "Post-FA-101 the deltas must be ~0; a nonzero delta is a "
+            "serving-skew regression (prediction_quality_backlog FA-102)."
+        ),
+    )
+    parser.add_argument(
         "--baselines-only",
         action="store_true",
         help=(
@@ -250,6 +261,7 @@ def run_backtest_mode(args: "argparse.Namespace", training_frame: pd.DataFrame, 
         feature_columns=_parse_csv(args.features),
         config=config,
         min_train_seasons=args.min_train_seasons,
+        serving_parity=args.serving_parity,
     )
 
     if args.experiment_name:
@@ -258,6 +270,7 @@ def run_backtest_mode(args: "argparse.Namespace", training_frame: pd.DataFrame, 
         mlflow.log_param("mode", "rolling_origin_backtest")
         mlflow.log_param("min_train_seasons", args.min_train_seasons)
         mlflow.log_param("feature_table", args.feature_table)
+        mlflow.log_param("serving_parity", args.serving_parity)
         for row in result["summary"].itertuples():
             mlflow.log_metric(f"{row.target}_{row.metric}_mean", row.mean)
             if row.folds > 1:
@@ -270,9 +283,25 @@ def run_backtest_mode(args: "argparse.Namespace", training_frame: pd.DataFrame, 
             (artifact_dir / "backtest_report.json").write_text(
                 result["report"].to_json(orient="records"), encoding="utf-8"
             )
+            if args.serving_parity:
+                # Paired training-vs-serving table stays in artifacts only:
+                # per-fold/per-metric rows would burn the metric quota
+                # (Working Agreement #4).
+                result["parity_report"].to_csv(
+                    artifact_dir / "serving_parity_report.csv", index=False
+                )
+                result["parity_summary"].to_csv(
+                    artifact_dir / "serving_parity_summary.csv", index=False
+                )
+                (artifact_dir / "serving_parity_report.json").write_text(
+                    result["parity_report"].to_json(orient="records"), encoding="utf-8"
+                )
             mlflow.log_artifacts(str(artifact_dir), artifact_path="backtest")
 
     print(result["summary"].to_string(index=False))
+    if args.serving_parity:
+        print("\nServing-parity deltas (serving-shaped minus training-shaped, cross-fold mean):")
+        print(result["parity_summary"].to_string(index=False))
     if not result["skipped"].empty:
         print("\nSkipped fold/target pairs:")
         print(result["skipped"].to_string(index=False))
