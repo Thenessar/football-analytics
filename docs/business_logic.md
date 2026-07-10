@@ -787,6 +787,11 @@ Implemented monitoring views (dbt, empty-but-queryable before data lands):
 - `mon_football__expected_minutes_accuracy` — minutes estimator accuracy and
   bench participation calibration.
 - `mon_football__simulation_vs_actual` — simulation vs realized outcomes.
+- `mon_football__inference_feature_health` — per-upcoming-fixture null rates
+  and within-team distinct counts for the player-differentiating feature
+  families, plus played-history freshness; guards the serving-skew class
+  where inference rows collapse to team-average features
+  (prediction_quality_backlog FA-103).
 
 ## 17. Roadmap For Future Agents
 

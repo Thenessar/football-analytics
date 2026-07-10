@@ -38,7 +38,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | Jira | Ticket | Persona | Depends on | Status |
 | --- | --- | --- | --- | --- |
 | FA-101 | P1 — Current player-Elo state for future fixtures | Ledger | — | ✅ DONE (2026-07-10) |
-| FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ⬜ TODO |
+| FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ✅ DONE (2026-07-10) |
 | FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ⬜ TODO |
 | FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | ⬜ TODO |
 | FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ⬜ TODO |
@@ -88,6 +88,12 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
 - **Files:** new `dbt/models/marts/mon_football__inference_feature_health.sql` (+ schema.yml), `docs/business_logic.md` §16.3.
 - **Required behavior:** view over non-completed feature-mart rows: per fixture/team — null rates and within-team distinct-count for the player-differentiating feature families (`*_modifier_pre`, `*_elo_pre`, `*_rating_pre`, `*_l5_p90`, `appearances_l5_count`), plus max `fct_football__player_match_features.fixture_date_utc` vs `current_timestamp()` (history staleness). Empty-but-queryable convention.
 - **Acceptance criteria:** monitor flags a synthetic all-constant team in a dbt unit test; empty-but-queryable with zero upcoming fixtures; wired into the §16.3 monitoring list with schema.yml docs.
+- **Implementation notes (2026-07-10):**
+  - Long-format view: one row per upcoming fixture/team/monitored feature (18 features: 6 player-Elo family, `appearances_l5_count`, 11 `*_l5_p90`), built as a Jinja `union all` over a CTE pre-filtered to `not is_completed_fixture` — 18 passes over a near-empty slice, cheap on the free-tier warehouse.
+  - Per row: `lineup_row_count`, `null_count`, `null_rate`, `distinct_value_count` (count-distinct ignores nulls, so all-null ⇒ 0 and is also degenerate), and `is_flagged_constant` = `lineup_row_count >= 11 and distinct_value_count <= 1`. Sparse events can flag legitimately on quiet teams — the view reports; the hard gate stays the FA-101 data test on modifiers.
+  - Staleness: `team_history_max_fixture_date_utc` (per team) + global `history_max_fixture_date_utc` and `history_staleness_hours` vs `current_timestamp()`; aggregates-without-group-by keep the view empty-but-queryable (zero rows only when there are no upcoming fixtures, never an error).
+  - Unit test `inference_feature_health_flags_all_constant_team`: 11-player future lineup with constant modifier (flagged), 11-distinct elo (not flagged), all-null features (flagged, null_rate 1.0), completed row excluded.
+  - Wired into `business_logic.md` §16.3 and schema.yml with per-column docs.
 
 ### P3 / FA-104. Player-identity rate features with shrinkage + position features + tuning (fixes E-4)
 - **Jira:** FA-104 · Story · Priority High · 8 pts · Labels `feature-engineering`, `lightgbm`, `tuning` · Depends on FA-101 (baseline) and FA-102 (honest measurement).

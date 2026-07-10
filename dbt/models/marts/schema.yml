@@ -153,6 +153,41 @@ models:
       missing expected minutes, and the active set's lineup source. Fixtures
       without predictions surface with zero coverage.
 
+  - name: mon_football__inference_feature_health
+    description: >
+      Inference feature-health monitor (prediction_quality_backlog FA-103):
+      one row per upcoming fixture/team/monitored feature over non-completed
+      feature-mart rows. Reports null rate and within-team distinct-value
+      count for the player-differentiating families (player-Elo
+      modifiers/elo/rating, *_l5_p90 rolling rates, appearances_l5_count)
+      plus played-history freshness. Guards the E-2 serving-skew class where
+      every player of a team collapses to the same feature values.
+      Empty-but-queryable before any upcoming fixture lands.
+    columns:
+      - name: feature_name
+        description: Feature-mart column this row reports on.
+      - name: lineup_row_count
+        description: Inference rows for the fixture/team (confirmed lineup size).
+      - name: null_count
+        description: Inference rows where the feature is null.
+      - name: null_rate
+        description: Share of inference rows where the feature is null.
+      - name: distinct_value_count
+        description: count(distinct feature) within the team's inference rows; nulls do not count, so all-null yields 0.
+      - name: is_flagged_constant
+        description: >
+          True when lineup_row_count >= 11 and distinct_value_count <= 1 —
+          a full lineup whose differentiating feature is all-null or
+          all-constant. Sparse *_l5_p90 events can flag legitimately on quiet
+          teams; the hard failing assertion on modifiers is the FA-101 data
+          test assert_fct_football__player_event_features_inference_elo_differentiated.
+      - name: team_history_max_fixture_date_utc
+        description: Newest played appearance for this team in fct_football__player_match_features.
+      - name: history_max_fixture_date_utc
+        description: Newest played appearance in fct_football__player_match_features overall.
+      - name: history_staleness_hours
+        description: Hours between current_timestamp() and history_max_fixture_date_utc.
+
   - name: fct_football__player_event_features
     description: >
       General player-event feature mart (one row per fixture/team/player)
