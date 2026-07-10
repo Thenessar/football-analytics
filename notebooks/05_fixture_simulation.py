@@ -31,6 +31,8 @@ dbutils.widgets.text("fixture_id", "")
 dbutils.widgets.text("window_minutes", "75")
 dbutils.widgets.text("n_sims", "10000")
 dbutils.widgets.text("seed", "7")
+# FA-105 Elo goal anchor blend weight; 0.0 = disabled until FA-106 fits it.
+dbutils.widgets.text("team_goal_anchor_weight", "0.0")
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
@@ -49,6 +51,9 @@ fixture_id_widget = dbutils.widgets.get("fixture_id").strip()
 window_minutes = max(1, int(dbutils.widgets.get("window_minutes").strip() or "75"))
 n_sims = max(100, int(dbutils.widgets.get("n_sims").strip() or "10000"))
 seed = int(dbutils.widgets.get("seed").strip() or "7")
+team_goal_anchor_weight = float(
+    dbutils.widgets.get("team_goal_anchor_weight").strip() or "0.0"
+)
 run_id = dbutils.widgets.get("run_id").strip() or f"simulation-{utc_now_iso()}"
 logger = configure_json_logging(level=logging.INFO, logger_name="football_analytics.fixture_simulation")
 
@@ -74,11 +79,27 @@ active_predictions = spark.sql(
     """
 ).toPandas()
 
-sim_config = SimulationConfig(n_sims=n_sims, seed=seed)
+sim_config = SimulationConfig(
+    n_sims=n_sims,
+    seed=seed,
+    team_goal_anchor_weight=team_goal_anchor_weight,
+)
 results = []
 if active_predictions.empty:
     results.append({"status": "SKIPPED", "reason": "no active prediction sets in the window"})
 else:
+    # One batched lookup of the Elo goal anchors for every fixture in the
+    # window (FA-105); team Elo emits pre-match rows for scheduled fixtures.
+    fixture_id_list = ",".join(
+        str(int(value)) for value in active_predictions["fixture_id"].unique()
+    )
+    team_expected_goals_df = spark.sql(
+        f"""
+        SELECT fixture_id, team_id, expected_goals_for_pre
+        FROM {table_name(config, "gold", "fct_football__team_elo_history")}
+        WHERE fixture_id IN ({fixture_id_list})
+        """
+    ).toPandas()
     for fixture_id, fixture_rows in active_predictions.groupby("fixture_id"):
         try:
             # Team-total dispersion from the registry tags of the exact model
@@ -99,7 +120,18 @@ else:
                 )
                 alpha_team = {}
 
-            inputs = build_simulation_inputs(fixture_rows, alpha_team=alpha_team)
+            fixture_anchors = {
+                int(row.team_id): float(row.expected_goals_for_pre)
+                for row in team_expected_goals_df[
+                    team_expected_goals_df["fixture_id"] == fixture_id
+                ].itertuples()
+                if row.expected_goals_for_pre is not None
+            }
+            inputs = build_simulation_inputs(
+                fixture_rows,
+                alpha_team=alpha_team,
+                expected_team_goals=fixture_anchors,
+            )
             sim_set_id = deterministic_sim_set_id(
                 int(fixture_id),
                 prediction_set_id=inputs.prediction_set_id,

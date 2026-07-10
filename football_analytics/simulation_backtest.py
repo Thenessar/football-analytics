@@ -82,8 +82,22 @@ def simulate_completed_fixtures(
             lineup_source=LINEUP_SOURCE_BACKTEST,
             feature_table_name="backtest",
         )
+        # Elo goal anchors for the FA-105 reconciliation; the feature mart
+        # carries one expected_goals_for_pre value per team's rows.
+        expected_team_goals = {}
+        if "expected_goals_for_pre" in fixture_rows.columns:
+            for team_id, team_rows in fixture_rows.groupby("team_id"):
+                values = pd.to_numeric(
+                    team_rows["expected_goals_for_pre"], errors="coerce"
+                ).dropna()
+                if not values.empty:
+                    expected_team_goals[int(team_id)] = float(values.iloc[0])
         try:
-            inputs = build_simulation_inputs(predictions, alpha_team=alpha_team)
+            inputs = build_simulation_inputs(
+                predictions,
+                alpha_team=alpha_team,
+                expected_team_goals=expected_team_goals,
+            )
         except SimulationInputError as error:
             skipped.append({"fixture_id": int(fixture_id), "reason": str(error)})
             continue

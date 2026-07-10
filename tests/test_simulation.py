@@ -252,6 +252,137 @@ def test_simulated_game_satisfies_every_structural_invariant():
         assert (counts[target][off_pitch] == 0).all()
 
 
+def test_team_goal_anchor_scales_intensities_and_preserves_shares():
+    from football_analytics.simulation import apply_team_goal_anchor
+
+    inputs = build_simulation_inputs(
+        _active_predictions(),
+        expected_team_goals={1: 3.0, 2: 0.5},
+    )
+    config = SimulationConfig(n_sims=100, seed=1, team_goal_anchor_weight=1.0)
+    anchored = apply_team_goal_anchor(inputs, config)
+
+    # w = 1: each team's expected goal total lands exactly on its Elo anchor.
+    for team_id, anchor in ((1, 3.0), (2, 0.5)):
+        mask = anchored.players["team_id"] == team_id
+        exposure = anchored.players.loc[mask, "expected_minutes"] / 90.0
+        total = float(
+            (anchored.players.loc[mask, "rate90_goals_total"] * exposure).sum()
+        )
+        assert total == pytest.approx(anchor)
+
+    # Shares preserved: outfield teammates keep identical (uniformly scaled)
+    # intensities; every other target family is untouched.
+    team_one_outfield = anchored.players[
+        (anchored.players["team_id"] == 1)
+        & (anchored.players["position_group"] != "G")
+    ]
+    assert team_one_outfield["rate90_goals_total"].nunique() == 1
+    pd.testing.assert_series_equal(
+        anchored.players["rate90_shots_total"],
+        inputs.players["rate90_shots_total"],
+    )
+    pd.testing.assert_series_equal(
+        anchored.players["rate90_shots_on"],
+        inputs.players["rate90_shots_on"],
+    )
+
+    # The original inputs stay untouched (pure function).
+    original_total = float(
+        (
+            inputs.players.loc[inputs.players["team_id"] == 1, "rate90_goals_total"]
+            * inputs.players.loc[inputs.players["team_id"] == 1, "expected_minutes"]
+            / 90.0
+        ).sum()
+    )
+    assert original_total != pytest.approx(3.0)
+
+
+def test_team_goal_anchor_blends_and_noops_without_weight_or_anchor():
+    from football_analytics.simulation import apply_team_goal_anchor
+
+    predictions = _active_predictions()
+    inputs = build_simulation_inputs(
+        predictions, expected_team_goals={1: 3.0, 2: 0.5}
+    )
+
+    # w = 0 (default) is an exact no-op, as is a missing anchor dict.
+    assert apply_team_goal_anchor(
+        inputs, SimulationConfig(team_goal_anchor_weight=0.0)
+    ) is inputs
+    without_anchor = build_simulation_inputs(predictions)
+    assert apply_team_goal_anchor(
+        without_anchor, SimulationConfig(team_goal_anchor_weight=1.0)
+    ) is without_anchor
+
+    # Intermediate weights blend the anchor with the player-sum total.
+    mask = inputs.players["team_id"] == 1
+    exposure = inputs.players.loc[mask, "expected_minutes"] / 90.0
+    original_total = float(
+        (inputs.players.loc[mask, "rate90_goals_total"] * exposure).sum()
+    )
+    half = apply_team_goal_anchor(
+        inputs, SimulationConfig(team_goal_anchor_weight=0.5)
+    )
+    blended_total = float(
+        (half.players.loc[mask, "rate90_goals_total"] * exposure).sum()
+    )
+    assert blended_total == pytest.approx(0.5 * 3.0 + 0.5 * original_total)
+
+    # The anchor weight participates in the config digest, so anchored sim
+    # sets replace rather than collide with unanchored ones.
+    assert deterministic_sim_set_id(
+        100, prediction_set_id="p1", config=SimulationConfig(team_goal_anchor_weight=0.5)
+    ) != deterministic_sim_set_id(
+        100, prediction_set_id="p1", config=SimulationConfig(team_goal_anchor_weight=0.0)
+    )
+
+
+def test_anchored_simulation_differentiates_mismatched_fixtures():
+    # E-6 acceptance: with the anchor on, team goal means track the Elo
+    # expected-goals ordering and a favorite-vs-minnow game looks visibly
+    # different from an even game — while determinism under seed holds.
+    predictions = _active_predictions()
+    config = SimulationConfig(n_sims=4000, seed=11, team_goal_anchor_weight=1.0)
+
+    even = simulate_fixture(
+        build_simulation_inputs(predictions, expected_team_goals={1: 1.3, 2: 1.3}),
+        config,
+    )
+    mismatch = simulate_fixture(
+        build_simulation_inputs(predictions, expected_team_goals={1: 3.0, 2: 0.5}),
+        config,
+    )
+
+    favorite_goals = float(mismatch.team_totals("goals_total", 1).mean())
+    underdog_goals = float(mismatch.team_totals("goals_total", 2).mean())
+    even_goals = float(even.team_totals("goals_total", 1).mean())
+    assert favorite_goals > even_goals > underdog_goals
+    assert favorite_goals == pytest.approx(3.0, rel=0.10)
+    assert underdog_goals == pytest.approx(0.5, rel=0.20)
+
+    favorite_win_rate = float(
+        (
+            mismatch.team_totals("goals_total", 1)
+            > mismatch.team_totals("goals_total", 2)
+        ).mean()
+    )
+    even_win_rate = float(
+        (even.team_totals("goals_total", 1) > even.team_totals("goals_total", 2)).mean()
+    )
+    assert favorite_win_rate > even_win_rate + 0.2
+
+    # Structural chain intact and deterministic under the same seed.
+    assert (mismatch.counts["goals_total"] <= mismatch.counts["shots_on"]).all()
+    repeat = simulate_fixture(
+        build_simulation_inputs(predictions, expected_team_goals={1: 3.0, 2: 0.5}),
+        config,
+    )
+    np.testing.assert_array_equal(
+        repeat.counts["goals_total"], mismatch.counts["goals_total"]
+    )
+
+
 def test_simulation_is_deterministic_under_seed():
     inputs = build_simulation_inputs(_active_predictions())
     config = SimulationConfig(n_sims=200, seed=23)

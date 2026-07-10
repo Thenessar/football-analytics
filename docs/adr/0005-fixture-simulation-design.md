@@ -101,6 +101,35 @@ digest).
    revisit if N6 shows systematic team-total bias on 3+ targets (then add a
    reconciliation layer, backlog §2.4 alternative).
 
+## Amendment (2026-07-11, engine 1.1.0): Elo goal anchor — FA-105
+
+Simplification 6 produced compressed, near-identical team goal totals in
+production because the player models under-discriminate (prediction quality
+backlog E-6); the Elo layer's `expected_goals_for_pre` already prices
+opponent strength per fixture and was unused. The engine now supports
+**top-down proportional reconciliation of goal intensities**
+(`apply_team_goal_anchor`): each team's player `goals_total` per-90
+intensities are scaled by one multiplicative factor so the expected team
+total equals `w * expected_goals_for_pre + (1 - w) * sum of player means`.
+Player shares are preserved and the structural chains are untouched — only
+the shots_on → goals conversion ratio scales, so `goals <= shots_on <=
+shots_total` still holds in every draw, and assists/saves inherit the
+anchored goals through their existing identities.
+
+- `SimulationConfig.team_goal_anchor_weight` (in the config digest, so
+  anchored sim sets supersede unanchored ones) defaults to **0.0 — the
+  anchor is OFF until the FA-106 holdout backtest fits `w`** against
+  team-total bias and interval coverage; record before/after numbers in the
+  backlog when it lands.
+- Anchors flow in per fixture: the notebook batch-reads
+  `fct_football__team_elo_history.expected_goals_for_pre` (one query per
+  run); the simulation backtest reads it off the feature-mart rows, which is
+  what makes the `w` sweep cheap.
+- Known bound: the per-player conversion ratio is clipped at 1, so extreme
+  upward factors can undershoot the anchor; the backtest records realized
+  bias. Extend the anchor to `shots_total` only if FA-106 shows totals bias
+  there too.
+
 ## Output
 
 `gold.sim_football__fixture_simulation` — grain `fixture_id / sim_set_id /

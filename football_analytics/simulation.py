@@ -24,7 +24,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-SIMULATION_ENGINE_VERSION = "1.0.0"
+SIMULATION_ENGINE_VERSION = "1.1.0"
 SIMULATION_TABLE_NAME = "sim_football__fixture_simulation"
 
 # All 11 targets the simulator emits, grouped by sampling treatment.
@@ -61,6 +61,10 @@ class SimulationConfig:
     assist_per_goal_rate: float = 0.688
     max_yellow_per_player: int = 2
     max_red_probability: float = 0.5
+    # FA-105: blend weight for anchoring team goal intensities to the Elo
+    # goal model (w * expected_goals_for_pre + (1-w) * sum of player means).
+    # 0.0 disables the anchor; keep it 0 until the FA-106 backtest fits it.
+    team_goal_anchor_weight: float = 0.0
 
     def digest(self) -> str:
         payload = {
@@ -70,6 +74,7 @@ class SimulationConfig:
             "assist_per_goal_rate": float(self.assist_per_goal_rate),
             "max_yellow_per_player": int(self.max_yellow_per_player),
             "max_red_probability": float(self.max_red_probability),
+            "team_goal_anchor_weight": float(self.team_goal_anchor_weight),
             "engine_version": SIMULATION_ENGINE_VERSION,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -91,6 +96,9 @@ class SimulationInputs:
     players: pd.DataFrame
     team_ids: Tuple[int, int]
     alpha_team: Dict[str, float] = field(default_factory=dict)
+    # Elo-layer expected team goals per team_id (stringified key, matching
+    # alpha_team's convention); consumed by the FA-105 totals anchor.
+    expected_team_goals: Dict[str, float] = field(default_factory=dict)
 
     def rates(self, target: str) -> np.ndarray:
         return self.players[f"rate90_{target}"].to_numpy(dtype=float)
@@ -120,6 +128,7 @@ def build_simulation_inputs(
     active_predictions: pd.DataFrame,
     *,
     alpha_team: Optional[Mapping[str, float]] = None,
+    expected_team_goals: Optional[Mapping[Any, float]] = None,
 ) -> SimulationInputs:
     """Pivots one fixture's active prediction set into simulation inputs.
 
@@ -221,6 +230,11 @@ def build_simulation_inputs(
         team_ids=(team_ids[0], team_ids[1]),
         alpha_team={
             str(k): max(0.0, float(v)) for k, v in dict(alpha_team or {}).items()
+        },
+        expected_team_goals={
+            str(int(k)): float(v)
+            for k, v in dict(expected_team_goals or {}).items()
+            if pd.notna(v) and float(v) > 0.0
         },
     )
 
@@ -352,6 +366,61 @@ def _starting_goalkeeper_index(players: pd.DataFrame, team_id: int) -> int:
     return int(team["rate90_goals_saves"].idxmax())
 
 
+def apply_team_goal_anchor(
+    inputs: SimulationInputs,
+    config: SimulationConfig,
+) -> SimulationInputs:
+    """Reconciles team goal intensities to the Elo goal model (FA-105).
+
+    Scales every team player's ``rate90_goals_total`` by one multiplicative
+    factor so the expected team total matches
+    ``w * expected_goals_for_pre + (1 - w) * Σ player means`` — top-down
+    proportional reconciliation: shares between teammates are preserved and
+    the structural chains stay untouched (only the shots_on → goals
+    conversion ratio scales, so goals <= shots_on still holds per draw).
+    With ``w = 0`` (the default until the FA-106 backtest fits it) or without
+    an anchor for the team, this is an exact no-op.
+
+    The per-player conversion ratio is clipped at 1 inside the chain, so an
+    extreme upward factor can undershoot the anchor; the FA-106 backtest
+    records the realized bias.
+    """
+
+    weight = float(config.team_goal_anchor_weight)
+    if weight <= 0.0 or not inputs.expected_team_goals:
+        return inputs
+
+    players = inputs.players.copy()
+    exposure = np.clip(
+        pd.to_numeric(players["expected_minutes"], errors="coerce")
+        .fillna(0.0)
+        .to_numpy(dtype=float)
+        / 90.0,
+        0.0,
+        None,
+    )
+    rates = players["rate90_goals_total"].to_numpy(dtype=float).copy()
+    for team_id in inputs.team_ids:
+        anchor = inputs.expected_team_goals.get(str(int(team_id)))
+        if anchor is None or not np.isfinite(anchor) or anchor <= 0.0:
+            continue
+        mask = (players["team_id"] == team_id).to_numpy()
+        mean_sum = float((rates[mask] * exposure[mask]).sum())
+        if mean_sum <= 0.0:
+            continue
+        target_total = weight * float(anchor) + (1.0 - weight) * mean_sum
+        rates[mask] *= target_total / mean_sum
+    players["rate90_goals_total"] = rates
+    return SimulationInputs(
+        fixture_id=inputs.fixture_id,
+        prediction_set_id=inputs.prediction_set_id,
+        players=players,
+        team_ids=inputs.team_ids,
+        alpha_team=inputs.alpha_team,
+        expected_team_goals=inputs.expected_team_goals,
+    )
+
+
 def simulate_fixture(
     inputs: SimulationInputs,
     config: Optional[SimulationConfig] = None,
@@ -361,10 +430,12 @@ def simulate_fixture(
     Draw order is fixed, so identical inputs + config are bit-identical:
     minutes → volume events (shots_total, passes_total, offsides,
     cards_yellow) → shot chain thinning → fouls mirror → saves identity →
-    assists → red cards.
+    assists → red cards. Goal intensities are anchored to the Elo goal model
+    first when the config enables it (FA-105).
     """
 
     cfg = config or SimulationConfig()
+    inputs = apply_team_goal_anchor(inputs, cfg)
     rng = np.random.default_rng(cfg.seed)
     players = inputs.players
     n_players = len(players)
