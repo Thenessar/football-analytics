@@ -41,3 +41,50 @@ unit_tests:
         - {fixture_id: 3, player_id: 7, appearances_l5_count: 2, minutes_l5: 180.0, shots_total_l5_count: 4.0, shots_total_l5_p90: 2.0, shots_total: 2.0}
         - {fixture_id: 4, player_id: 7, appearances_l5_count: 3, minutes_l5: 270.0, shots_total_l5_count: 6.0, shots_total_l5_p90: 2.0, shots_total: 2.0}
         - {fixture_id: 5, player_id: 7, appearances_l5_count: 4, minutes_l5: 360.0, shots_total_l5_count: 8.0, shots_total_l5_p90: 2.0, shots_total: 50.0}
+
+  - name: player_event_features_inference_rows_use_current_player_elo_state
+    description: >
+      Serving-skew regression (prediction_quality_backlog FA-101 / E-2):
+      inference rows for a future fixture must carry each player's distinct
+      current-state modifier (joined by player, not by fixture) and recompute
+      player_offensive_elo_pre as the future fixture's team Elo baseline plus
+      that modifier — exactly the training-time definition. Completed-fixture
+      rows must keep their fixture-exact player-Elo values bit-identical.
+      All mocked modifier values are binary-exact so equality is safe.
+    model: fct_football__player_event_features
+    given:
+      - input: ref('fct_football__player_match_features')
+        rows:
+          - {fixture_id: 1, fixture_date_utc: "2026-06-01 18:00:00", team_id: 1, player_id: 7, player_name: "Star Forward", is_starter: true, position_group: "F", is_goalkeeper: false, games_minutes: 90, shots_total: 4}
+          - {fixture_id: 1, fixture_date_utc: "2026-06-01 18:00:00", team_id: 1, player_id: 8, player_name: "Squad Midfielder", is_starter: true, position_group: "M", is_goalkeeper: false, games_minutes: 90, shots_total: 1}
+      - input: ref('stg_football__lineups')
+        rows:
+          - {fixture_id: 2, team_id: 1, player_id: 7, player_name: "Star Forward", is_starting: true, position: "F"}
+          - {fixture_id: 2, team_id: 1, player_id: 8, player_name: "Squad Midfielder", is_starting: true, position: "M"}
+      - input: ref('fct_football__team_match_context')
+        rows:
+          - {fixture_id: 2, fixture_date_utc: "2026-06-10 18:00:00", team_id: 1, team_name: "Team A", status_short: "NS", home_away: "home"}
+      - input: ref('fct_football__team_elo_history')
+        rows:
+          - {fixture_id: 1, team_id: 1, team_elo_attack_pre: 0.25, team_elo_defense_pre: 0.125}
+          - {fixture_id: 2, team_id: 1, team_elo_attack_pre: 0.25, team_elo_defense_pre: 0.125}
+      - input: ref('fct_football__player_elo_history')
+        rows:
+          - {fixture_id: 1, team_id: 1, player_id: 7, is_current_state: false, player_offensive_modifier_pre: 0.125, player_defensive_modifier_pre: 0.0, player_offensive_elo_pre: 0.375, player_defensive_elo_pre: 0.125, player_offensive_rating_pre: 0.375, player_defensive_rating_pre: 0.125, missed_fixture_count_pre: 0}
+          - {fixture_id: 1, team_id: 1, player_id: 8, is_current_state: false, player_offensive_modifier_pre: -0.125, player_defensive_modifier_pre: 0.0, player_offensive_elo_pre: 0.125, player_defensive_elo_pre: 0.125, player_offensive_rating_pre: 0.125, player_defensive_rating_pre: 0.125, missed_fixture_count_pre: 0}
+          - {fixture_id: null, team_id: 1, player_id: 7, is_current_state: true, player_offensive_modifier_pre: 0.5, player_defensive_modifier_pre: 0.25, missed_fixture_count_pre: 0}
+          - {fixture_id: null, team_id: 1, player_id: 8, is_current_state: true, player_offensive_modifier_pre: -0.25, player_defensive_modifier_pre: 0.0, missed_fixture_count_pre: 2}
+      - input: ref('fct_football__lineup_elo_strength')
+        rows: []
+      - input: ref('fct_football__formation_matchup_history')
+        rows: []
+      - input: ref('fct_football__team_match_stats_context')
+        rows: []
+      - input: ref('fct_football__player_expected_minutes')
+        rows: []
+    expect:
+      rows:
+        - {fixture_id: 1, player_id: 7, is_completed_fixture: true, player_offensive_modifier_pre: 0.125, player_offensive_elo_pre: 0.375, player_offensive_rating_pre: 0.375, missed_fixture_count_pre: 0}
+        - {fixture_id: 1, player_id: 8, is_completed_fixture: true, player_offensive_modifier_pre: -0.125, player_offensive_elo_pre: 0.125, player_offensive_rating_pre: 0.125, missed_fixture_count_pre: 0}
+        - {fixture_id: 2, player_id: 7, is_completed_fixture: false, player_offensive_modifier_pre: 0.5, player_offensive_elo_pre: 0.75, player_offensive_rating_pre: 0.75, player_defensive_elo_pre: 0.375, missed_fixture_count_pre: 0}
+        - {fixture_id: 2, player_id: 8, is_completed_fixture: false, player_offensive_modifier_pre: -0.25, player_offensive_elo_pre: 0.0, player_offensive_rating_pre: 0.0, player_defensive_elo_pre: 0.125, missed_fixture_count_pre: 2}

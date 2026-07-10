@@ -270,6 +270,137 @@ def test_zero_minute_player_snapshot_decays_modifier_before_emit():
     )
 
 
+def test_player_elo_history_emits_current_state_rows_after_history_pass():
+    # FA-101: after the chronological pass the builder must append one
+    # current-state row per (team, player) so future fixtures — which have no
+    # played appearance rows — can join the pre-match state by player.
+    fixtures = pd.DataFrame([
+        _fixture(1, "2023-01-01T12:00:00Z", home_goals=1, away_goals=0),
+        _fixture(2, "2023-01-02T12:00:00Z", home_goals=1, away_goals=0),
+    ])
+    team_history = build_team_elo_history(fixtures)
+    base_row = {
+        "team_id": 1,
+        "team_name": "Team A",
+        "games_minutes": 90,
+        "shots_total": 0,
+        "shots_on": 0,
+        "dribbles_attempts": 0,
+        "goals_assists": 0,
+        "tackles_interceptions": 0,
+        "tackles_total": 0,
+        "fouls_committed": 0,
+    }
+    appearances = pd.DataFrame([
+        {
+            **base_row,
+            "fixture_id": 1,
+            "fixture_date_utc": "2023-01-01T12:00:00Z",
+            "player_id": 10,
+            "player_name": "Explosive Winger",
+            "shots_total": 5,
+            "shots_on": 2,
+            "dribbles_attempts": 4,
+        },
+        {
+            **base_row,
+            "fixture_id": 1,
+            "fixture_date_utc": "2023-01-01T12:00:00Z",
+            "player_id": 11,
+            "player_name": "Control Midfielder",
+        },
+        {
+            **base_row,
+            "fixture_id": 2,
+            "fixture_date_utc": "2023-01-02T12:00:00Z",
+            "player_id": 11,
+            "player_name": "Control Midfielder",
+        },
+    ])
+
+    history = build_player_elo_history(appearances, team_history)
+    current = history[history["is_current_state"]]
+    fixture_rows = history[~history["is_current_state"]]
+
+    assert sorted(current["player_id"].tolist()) == [10, 11]
+    assert current["fixture_id"].isna().all()
+    assert fixture_rows["fixture_id"].notna().all()
+
+    signal = 5 + 0.5 * 2 + 0.35 * 4
+    post_first_match_modifier = 0.05 * (signal - signal / 2)
+    winger = current[current["player_id"] == 10].iloc[0]
+    midfielder = current[current["player_id"] == 11].iloc[0]
+
+    # The winger missed fixture 2, so the current state carries the decayed
+    # modifier — exactly the pre-match state of any future fixture.
+    assert winger["player_offensive_modifier_pre"] == pytest.approx(
+        post_first_match_modifier * 0.85
+    )
+    assert winger["missed_fixture_count_pre"] == 1
+    assert midfielder["player_offensive_modifier_pre"] == pytest.approx(
+        -post_first_match_modifier
+    )
+    assert midfielder["missed_fixture_count_pre"] == 0
+    # State-as-of timestamp is the team's last processed fixture date.
+    assert winger["fixture_date_utc"] == pd.Timestamp("2023-01-02T12:00:00Z")
+    # Fixture context does not exist for current-state rows.
+    assert pd.isna(winger["games_minutes"])
+    assert pd.isna(winger["player_offensive_elo_pre"])
+
+
+def test_assemble_hierarchical_feature_frame_ignores_current_state_rows():
+    features = pd.DataFrame([{
+        "fixture_id": 1,
+        "team_id": 1,
+        "player_id": 10,
+        "shots_total": 1,
+    }])
+    team_history = pd.DataFrame([{
+        "fixture_id": 1,
+        "team_id": 1,
+        "team_elo_general_pre": 1500.0,
+        "opponent_elo_general_pre": 1490.0,
+        "team_elo_attack_pre": 0.1,
+        "team_elo_defense_pre": 0.2,
+        "opponent_elo_attack_pre": -0.1,
+        "opponent_elo_defense_pre": 0.0,
+        "expected_goals_for_pre": 1.3,
+        "expected_goals_against_pre": 1.1,
+    }])
+    player_history = pd.DataFrame([
+        {
+            "fixture_id": 1,
+            "team_id": 1,
+            "player_id": 10,
+            "player_offensive_modifier_pre": 0.3,
+            "player_defensive_modifier_pre": -0.2,
+            "player_offensive_rating_pre": 0.4,
+            "player_defensive_rating_pre": 0.0,
+            "missed_fixture_count_pre": 0,
+            "is_current_state": False,
+        },
+        {
+            "fixture_id": None,
+            "team_id": 1,
+            "player_id": 10,
+            "player_offensive_modifier_pre": 0.9,
+            "player_defensive_modifier_pre": 0.9,
+            "player_offensive_rating_pre": None,
+            "player_defensive_rating_pre": None,
+            "missed_fixture_count_pre": 3,
+            "is_current_state": True,
+        },
+    ])
+
+    enriched = assemble_hierarchical_feature_frame(features, team_history, player_history)
+
+    # Completed rows keep the fixture-exact snapshot; the current-state row
+    # (post-history state) must never reach the training path.
+    assert len(enriched) == 1
+    assert enriched.iloc[0]["player_offensive_modifier_pre"] == 0.3
+    assert enriched.iloc[0]["missed_fixture_count_pre"] == 0
+
+
 def test_structural_zero_imputation_and_null_guard():
     frame = pd.DataFrame({
         "shots_total": [None, 2],

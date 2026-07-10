@@ -3,6 +3,9 @@
 -- training, future fixtures with confirmed lineups carry null labels for
 -- inference. All predictors are pre-match safe: Elo columns are _pre
 -- variants and rolling history comes from strictly-prior played appearances.
+-- Player-Elo columns join fixture-exact snapshots for completed rows and the
+-- per-player current-state rows for inference rows (FA-101), so both paths
+-- carry the same feature family the registered models were trained on.
 
 with played as (
     select * from {{ ref('fct_football__player_match_features') }}
@@ -221,6 +224,23 @@ player_elo as (
         player_defensive_rating_pre,
         missed_fixture_count_pre
     from {{ ref('fct_football__player_elo_history') }}
+    where fixture_id is not null
+),
+
+-- Current per-player modifier state after all played fixtures (FA-101).
+-- Player-Elo history only has rows for played appearances, so future
+-- fixtures can never join fixture-exact; the current state is by
+-- construction their pre-match state, and the family is recomputed below
+-- against the future fixture's team Elo row exactly as training defines it.
+player_elo_current as (
+    select
+        team_id,
+        player_id,
+        player_offensive_modifier_pre as current_offensive_modifier,
+        player_defensive_modifier_pre as current_defensive_modifier,
+        missed_fixture_count_pre as current_missed_fixture_count
+    from {{ ref('fct_football__player_elo_history') }}
+    where is_current_state
 ),
 
 lineup_strength as (
@@ -319,13 +339,38 @@ select
     coalesce(formation_history.formation_matchup_win_rate_pre, 0.5) as formation_matchup_win_rate_pre,
     coalesce(formation_history.formation_matchup_count_pre, 0) as formation_matchup_count_pre,
 
-    coalesce(player_elo.player_offensive_modifier_pre, 0.0) as player_offensive_modifier_pre,
-    coalesce(player_elo.player_defensive_modifier_pre, 0.0) as player_defensive_modifier_pre,
-    coalesce(player_elo.player_offensive_elo_pre, team_elo.team_elo_attack_pre, 0.0) as player_offensive_elo_pre,
-    coalesce(player_elo.player_defensive_elo_pre, team_elo.team_elo_defense_pre, 0.0) as player_defensive_elo_pre,
-    coalesce(player_elo.player_offensive_rating_pre, player_elo.player_offensive_elo_pre, team_elo.team_elo_attack_pre, 0.0) as player_offensive_rating_pre,
-    coalesce(player_elo.player_defensive_rating_pre, player_elo.player_defensive_elo_pre, team_elo.team_elo_defense_pre, 0.0) as player_defensive_rating_pre,
-    coalesce(player_elo.missed_fixture_count_pre, 0) as missed_fixture_count_pre,
+    -- Fixture-exact player Elo for completed rows; current-state recompute
+    -- for inference rows (FA-101): elo/rating = team baseline + modifier,
+    -- mirroring build_player_elo_history's snapshot formula.
+    coalesce(player_elo.player_offensive_modifier_pre, player_elo_current.current_offensive_modifier, 0.0) as player_offensive_modifier_pre,
+    coalesce(player_elo.player_defensive_modifier_pre, player_elo_current.current_defensive_modifier, 0.0) as player_defensive_modifier_pre,
+    coalesce(
+        player_elo.player_offensive_elo_pre,
+        team_elo.team_elo_attack_pre + player_elo_current.current_offensive_modifier,
+        team_elo.team_elo_attack_pre,
+        0.0
+    ) as player_offensive_elo_pre,
+    coalesce(
+        player_elo.player_defensive_elo_pre,
+        team_elo.team_elo_defense_pre + player_elo_current.current_defensive_modifier,
+        team_elo.team_elo_defense_pre,
+        0.0
+    ) as player_defensive_elo_pre,
+    coalesce(
+        player_elo.player_offensive_rating_pre,
+        player_elo.player_offensive_elo_pre,
+        team_elo.team_elo_attack_pre + player_elo_current.current_offensive_modifier,
+        team_elo.team_elo_attack_pre,
+        0.0
+    ) as player_offensive_rating_pre,
+    coalesce(
+        player_elo.player_defensive_rating_pre,
+        player_elo.player_defensive_elo_pre,
+        team_elo.team_elo_defense_pre + player_elo_current.current_defensive_modifier,
+        team_elo.team_elo_defense_pre,
+        0.0
+    ) as player_defensive_rating_pre,
+    coalesce(player_elo.missed_fixture_count_pre, player_elo_current.current_missed_fixture_count, 0) as missed_fixture_count_pre,
 
     coalesce(history_aggregates.appearances_l5_count, 0) as appearances_l5_count,
     coalesce(history_aggregates.minutes_l5, 0.0) as minutes_l5,
@@ -400,6 +445,12 @@ left join player_elo
     on base.fixture_id = player_elo.fixture_id
    and base.team_id = player_elo.team_id
    and base.player_id = player_elo.player_id
+-- Current-state fallback is restricted to inference rows: a completed row
+-- falling back to post-history state would leak its own fixture's update.
+left join player_elo_current
+    on base.team_id = player_elo_current.team_id
+   and base.player_id = player_elo_current.player_id
+   and not base.is_completed_fixture
 left join lineup_strength
     on base.fixture_id = lineup_strength.fixture_id
    and base.team_id = lineup_strength.team_id

@@ -74,6 +74,7 @@ class PlayerModifierState:
 
     player_key: str
     player_name: str
+    player_id: Any = None
     offensive_modifier: float = 0.0
     defensive_modifier: float = 0.0
     missed_fixture_count: int = 0
@@ -422,6 +423,7 @@ def _get_player_state(
         states[state_key] = PlayerModifierState(
             player_key=player_key,
             player_name=str(player_name),
+            player_id=player_id,
         )
     return states[state_key]
 
@@ -441,6 +443,14 @@ def build_player_elo_history(
     player-specific modifier. Known players who miss a national-team fixture have
     their modifiers multiplied by `decay_alpha` before any appearance snapshots
     for that fixture are emitted.
+
+    After the chronological pass one current-state row per (team, player) is
+    appended (`is_current_state = True`, null `fixture_id`) carrying the final
+    modifiers and missed-fixture count. Because the pass only consumes played
+    fixtures, that final state is exactly the pre-match state of any future
+    fixture, which lets serving-time feature builds join per player instead of
+    per fixture (FA-101). Fixture-level snapshot rows carry
+    `is_current_state = False`.
     """
 
     if not 0.0 < decay_alpha <= 1.0:
@@ -503,11 +513,15 @@ def build_player_elo_history(
 
     states: Dict[Tuple[str, str], PlayerModifierState] = {}
     team_rosters: Dict[str, set[str]] = {}
+    team_identity: Dict[str, Tuple[Any, Any]] = {}
+    team_last_date: Dict[str, Any] = {}
     snapshots = []
 
     for _, team_row in team_rows.iterrows():
         team_key = _clean_key(team_row["team_id"], team_row["team_name"])
         team_rosters.setdefault(team_key, set())
+        team_identity[team_key] = (team_row["team_id"], team_row["team_name"])
+        team_last_date[team_key] = team_row["fixture_date_utc"]
         fixture_key = _team_fixture_key(
             team_row["fixture_id"],
             team_row["team_id"],
@@ -604,6 +618,7 @@ def build_player_elo_history(
                 "player_defensive_signal_p90": float(app_row["player_defensive_signal_p90"]),
                 "team_offensive_signal_p90": team_off_avg,
                 "team_defensive_signal_p90": team_def_avg,
+                "is_current_state": False,
             })
 
         if active_apps.empty:
@@ -636,6 +651,38 @@ def build_player_elo_history(
                 )
             )
             state.missed_fixture_count = 0
+
+    # Current-state rows: the state after all played fixtures is by
+    # construction the pre-match state of any future fixture (no result that
+    # has not happened yet can have updated it). Lineups are unknown at
+    # medallion build time, so these rows are per player, not per fixture.
+    for team_key, player_key in sorted(states.keys()):
+        state = states[(team_key, player_key)]
+        team_id, team_name = team_identity[team_key]
+        snapshots.append({
+            "fixture_id": None,
+            "fixture_date_utc": team_last_date.get(team_key),
+            "team_id": team_id,
+            "team_name": team_name,
+            "player_id": state.player_id,
+            "player_name": state.player_name,
+            "games_minutes": None,
+            "team_elo_general_pre": None,
+            "team_elo_attack_pre": None,
+            "team_elo_defense_pre": None,
+            "player_offensive_modifier_pre": float(state.offensive_modifier),
+            "player_defensive_modifier_pre": float(state.defensive_modifier),
+            "player_offensive_elo_pre": None,
+            "player_defensive_elo_pre": None,
+            "player_offensive_rating_pre": None,
+            "player_defensive_rating_pre": None,
+            "missed_fixture_count_pre": int(state.missed_fixture_count),
+            "player_offensive_signal_p90": None,
+            "player_defensive_signal_p90": None,
+            "team_offensive_signal_p90": None,
+            "team_defensive_signal_p90": None,
+            "is_current_state": True,
+        })
 
     return pd.DataFrame(snapshots)
 
@@ -674,6 +721,13 @@ def assemble_hierarchical_feature_frame(
     )
 
     if player_elo_history_df is not None and not player_elo_history_df.empty:
+        # Training rows join fixture-exact snapshots only; per-player
+        # current-state rows (FA-101) are a serving-time concern and must not
+        # leak post-history state into completed fixtures.
+        if "is_current_state" in player_elo_history_df.columns:
+            player_elo_history_df = player_elo_history_df[
+                player_elo_history_df["is_current_state"] != True  # noqa: E712 (NaN-safe)
+            ]
         player_columns = [
             "fixture_id",
             "team_id",

@@ -592,7 +592,13 @@ models:
           - not_null
 
   - name: fct_football__player_elo_history
-    description: Chronological player Elo history with player modifiers anchored to the current national-team attack and defense baseline.
+    description: >
+      Chronological player Elo history with player modifiers anchored to the
+      current national-team attack and defense baseline. In addition to the
+      per-appearance snapshots, one current-state row per (team, player) is
+      emitted after the chronological pass (is_current_state = true, null
+      fixture_id) carrying the post-history modifiers; inference rows in the
+      feature mart join those by player for future fixtures (FA-101).
     config:
       tags:
         - python
@@ -610,7 +616,9 @@ models:
     columns:
       - name: fixture_id
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "not is_current_state"
           - relationships:
               arguments:
                 to: ref('stg_football__fixtures')
@@ -623,13 +631,19 @@ models:
           - not_null
       - name: games_minutes
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "not is_current_state"
       - name: player_offensive_elo_pre
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "not is_current_state"
       - name: player_defensive_elo_pre
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "not is_current_state"
       - name: player_offensive_modifier_pre
         tests:
           - not_null
@@ -637,6 +651,9 @@ models:
         tests:
           - not_null
       - name: missed_fixture_count_pre
+        tests:
+          - not_null
+      - name: is_current_state
         tests:
           - not_null
 

@@ -37,7 +37,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 
 | Jira | Ticket | Persona | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| FA-101 | P1 — Current player-Elo state for future fixtures | Ledger | — | ⬜ TODO |
+| FA-101 | P1 — Current player-Elo state for future fixtures | Ledger | — | ✅ DONE (2026-07-10) |
 | FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ⬜ TODO |
 | FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ⬜ TODO |
 | FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | ⬜ TODO |
@@ -66,6 +66,14 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   - New dbt data test (also the P2 monitor's assertion): for any non-completed fixture/team with ≥ 11 lineup rows, `count(distinct player_offensive_modifier_pre) > 1`.
   - After deploy, rerun inference on one upcoming fixture and record before/after predicted_mean spread for the top-l5 player here.
   - **No model retrain required or performed in this ticket** (the registered v7 boosters already consume these features).
+- **Implementation notes (2026-07-10):**
+  - `build_player_elo_history` appends one current-state row per `(team, player)` after the chronological pass: `is_current_state = true`, `fixture_id` null, final modifiers + `missed_fixture_count_pre`, and `fixture_date_utc` = the team's last processed fixture date (state-as-of timestamp — usable by the FA-103 staleness check). Appearance snapshots carry `is_current_state = false`.
+  - `PLAYER_ELO_SCHEMA` gained nullable `fixture_id` and non-null `is_current_state`; the dbt Python model now converts NaN→None and nullable-int floats→int before `createDataFrame` (pandas promotes int columns with nulls to float64, which Spark's `IntegerType` rejects).
+  - Feature mart: `player_elo` CTE is restricted to `fixture_id is not null` (completed rows bit-identical — fixture-exact values stay first in every coalesce); new `player_elo_current` CTE joins by `(team_id, player_id)` — not `player_id` alone, matching the builder's state keying and avoiding fan-out for players with appearances for more than one association — gated to `not base.is_completed_fixture` so a completed row can never leak its own fixture's update. Elo/rating recomputed as `team_elo_attack_pre + current modifier`, exactly the training-time snapshot formula.
+  - `assemble_hierarchical_feature_frame` drops `is_current_state` rows before merging (training path stays fixture-exact).
+  - Tests: `test_player_elo_history_emits_current_state_rows_after_history_pass` (decay + missed-count carried into current state), `test_assemble_hierarchical_feature_frame_ignores_current_state_rows`, dbt unit test `player_event_features_inference_rows_use_current_player_elo_state` (distinct per-player modifiers on a mocked future fixture, completed rows unchanged; binary-exact mock values), and data test `assert_fct_football__player_event_features_inference_elo_differentiated` (the standing ≥11-lineup distinct-modifier assertion FA-103 builds on).
+  - **Pending deploy:** the before/after predicted-mean spread on a live fixture cannot be recorded until the marts are rebuilt on Databricks and inference reruns (prod jobs paused in 7fcb212; SQL warehouse quota limited). Record it alongside the FA-106 run, which requires this deploy anyway.
+  - Follow-up (out of scope here): `fct_football__lineup_elo_strength` still joins fixture-exact rows only, so `team_lineup_attack_strength` for future fixtures falls back to team Elo instead of a lineup-weighted average; it could join `player_elo_current` the same way. Candidate for FA-104, which owns the feature-set revision.
 
 ### P2a / FA-102. Serving-parity backtest mode (fixes E-5)
 - **Jira:** FA-102 · Story · Priority High · 5 pts · Labels `evaluation`, `backtest` · Depends on FA-101.
