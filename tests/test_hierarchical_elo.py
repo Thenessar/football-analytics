@@ -566,6 +566,43 @@ def test_build_training_feature_frame_keeps_only_completed_rows_with_minutes():
     assert training["fixture_id"].tolist() == [1]
 
 
+def test_position_group_one_hots_are_derived_on_both_paths():
+    # FA-104: add_model_interaction_features is applied by the training frame
+    # builder AND build_prediction_records, so deriving the one-hots there
+    # keeps the encoding identical between training and serving.
+    frame = pd.DataFrame([
+        {"position_group": "F"},
+        {"position_group": "G"},
+        {"position_group": None},
+        {"position_group": "X"},
+    ])
+
+    enriched = add_model_interaction_features(frame)
+
+    assert enriched["position_group_f"].tolist() == [1.0, 0.0, 0.0, 0.0]
+    assert enriched["position_group_g"].tolist() == [0.0, 1.0, 0.0, 0.0]
+    assert enriched["position_group_d"].tolist() == [0.0, 0.0, 0.0, 0.0]
+    # unknown or missing groups get all-zero indicators, not a default group
+    assert enriched["position_group_m"].tolist() == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_default_lightgbm_features_include_identity_and_position_features():
+    # FA-104 feature-set revision: EB career rates + player role.
+    expected = {
+        "is_goalkeeper",
+        "position_group_g",
+        "position_group_d",
+        "position_group_m",
+        "position_group_f",
+        "shots_total_eb_p90",
+        "goals_total_eb_p90",
+        "passes_total_eb_p90",
+        "cards_red_eb_p90",
+    }
+
+    assert expected.issubset(set(DEFAULT_LIGHTGBM_FEATURES))
+
+
 def test_default_lightgbm_features_include_persisted_and_derived_elo_features():
     expected = {
         "player_offensive_rating_pre",

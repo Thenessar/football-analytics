@@ -57,6 +57,27 @@ GOALKEEPER_ONLY_TARGETS = frozenset({"goals_saves"})
 # actual games_minutes at training time, expected_minutes at inference time.
 DEFAULT_LIGHTGBM_FEATURES = [
     "is_starting",
+    # Player role (FA-104): one-hots derived by add_model_interaction_features
+    # from position_group; is_goalkeeper comes straight from the mart.
+    "is_goalkeeper",
+    "position_group_g",
+    "position_group_d",
+    "position_group_m",
+    "position_group_f",
+    # Empirical-Bayes career per-90 identity rates (FA-104): decayed career
+    # sums shrunk toward the strictly-prior position-group rate. Low-noise
+    # complement to the *_l5_p90 form windows below.
+    "offsides_eb_p90",
+    "shots_total_eb_p90",
+    "shots_on_eb_p90",
+    "goals_total_eb_p90",
+    "goals_assists_eb_p90",
+    "goals_saves_eb_p90",
+    "passes_total_eb_p90",
+    "fouls_drawn_eb_p90",
+    "fouls_committed_eb_p90",
+    "cards_yellow_eb_p90",
+    "cards_red_eb_p90",
     "appearances_l5_count",
     "minutes_l5",
     "offsides_l5_p90",
@@ -133,13 +154,29 @@ def _unique_preserve_order(values: Iterable[str]) -> list[str]:
     return unique
 
 
+POSITION_GROUP_CODES = ("G", "D", "M", "F")
+
+
 def add_model_interaction_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Adds leakage-safe matchup features from dbt-materialized ELO columns."""
+    """Adds leakage-safe matchup features from dbt-materialized ELO columns.
+
+    Also derives ``position_group_<code>`` one-hots (FA-104) so player role is
+    a real feature instead of the goals_saves_l5_p90 goalkeeper proxy the E-3
+    gain table exposed. Applied on both the training and inference paths, so
+    the encoding can never skew between them.
+    """
 
     out = frame.copy()
 
     def has(*columns: str) -> bool:
         return all(column in out.columns for column in columns)
+
+    if "position_group" in out.columns:
+        # Unknown/missing groups get all-zero indicators rather than a
+        # default group.
+        groups = out["position_group"].fillna("").astype(str).str.upper()
+        for code in POSITION_GROUP_CODES:
+            out[f"position_group_{code.lower()}"] = (groups == code).astype(float)
 
     if has("team_elo_general_pre", "opponent_elo_general_pre"):
         out["team_elo_general_diff"] = (

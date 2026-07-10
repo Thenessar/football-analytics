@@ -40,7 +40,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | FA-101 | P1 — Current player-Elo state for future fixtures | Ledger | — | ✅ DONE (2026-07-10) |
 | FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ✅ DONE (2026-07-10) |
 | FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ✅ DONE (2026-07-10) |
-| FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | ⬜ TODO |
+| FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | 🟨 CODE LANDED (2026-07-11) — evidence runs pending deploy |
 | FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ⬜ TODO |
 | FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | ⬜ TODO |
 | FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | ⬜ TODO |
@@ -113,6 +113,18 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   - Run M3 tuning (F-4) on the new feature set; commit adopted `config/lgbm_params/*.json` with the comparison table.
   - Optional, evidence-gated: LightGBM `monotone_constraints` (+1) on own-event `_eb_p90`/`_l5_p90` features.
 - **Acceptance criteria:** rolling-origin backtest (L2) shows, vs the P1-fixed baseline: `rank_spearman` and `top1_hit_rate` up, `skill_vs_player_l5` materially above 0.086, RPS non-worse, ECE within 0.02. Record the table here. Leakage rule: decay windows strictly prior to the row's fixture (mirror the `prior_appearances` ranked-join pattern).
+- **Implementation notes (2026-07-11) — code landed, evidence runs pending:**
+  - Mart: `<event>_eb_p90` per target = `(Σ w·y + k·posgroup_rate) / (Σ w·exposure + k)` with `w = 0.5^(appearance_age/10)` over **all** strictly-prior played appearances (reuses the leakage-safe `prior_appearances` ranked join), `k = 5` ninety-minute pseudo-appearances. The ticket's formula sketch had a spurious `· sum(exposure)` in the prior term; the implemented form is the standard Gamma-Poisson posterior mean (prior weight k, prior mean = posgroup rate) — with no history it returns the posgroup rate, with a long career it converges to the decayed career rate.
+  - The shrinkage prior is the **strictly-prior** position-group per-90 rate: daily cumulative posgroup sums (`posgroup_running`) looked up as-of the row's fixture date with `max_by` (same-date fixtures excluded). No static population constants, so the L2 backtest folds stay leakage-clean.
+  - EB features derive identically for completed and inference rows (both purely from strictly-prior played appearances) — serving-skew-free by construction, no FA-102 helper extension needed.
+  - `position_group_g/d/m/f` one-hots derive in `add_model_interaction_features` (applied by both `build_training_feature_frame` and `build_prediction_records` — training/serving parity); unknown groups get all-zero indicators. `is_goalkeeper` + one-hots + 11 `*_eb_p90` added to `DEFAULT_LIGHTGBM_FEATURES` (`_select_available_features` drops them harmlessly on pre-FA-104 tables).
+  - Tests: dbt unit test `player_event_features_eb_rates_shrink_and_exclude_current_fixture` (binary-exact shrinkage math + both leakage guards: own-fixture sums and same-date posgroup prior), python tests for one-hots and the feature list.
+  - **Pending (blocked: prod deploy requires user approval — auto-mode denied `databricks bundle deploy -t prod`). Runbook:**
+    1. `databricks bundle deploy -t prod --var="sql_warehouse_id=eec07ef59d758b5d"` then `databricks bundle run international_medallion_pipeline -t prod --var="sql_warehouse_id=eec07ef59d758b5d"` (rebuilds marts with FA-101+FA-104, runs all dbt unit/data tests — this is also FA-101's deploy).
+    2. On Databricks, P1-fixed baseline: `python scripts/train_poisson_lgbm.py --backtest --serving-parity --features <pre-FA-104 list>`; new feature set: same command without `--features`. Record the acceptance table here (rank_spearman/top1 up, skill_vs_player_l5 ≫ 0.086, RPS non-worse, ECE within 0.02) plus the FA-102 parity delta (must be ≈ 0).
+    3. `scripts/tune_lgbm.py` (F-4, needs the `tuning` extra) on the new feature set; commit adopted `config/lgbm_params/*.json` with the comparison table.
+    4. Modifier-clip/lr evaluation (E-4): needs feature-table rebuilds with `DEFAULT_PLAYER_MODIFIER_CLIP` 2.0/2.5 variants scored via step 2 — budget a separate quota day; adopt only on backtest evidence + ADR note.
+  - Follow-up carried from FA-101: `fct_football__lineup_elo_strength` current-state join (lineup strength for future fixtures still falls back to team Elo); extend `degrade_rows_to_serving_shape` in the same change and keep the parity gate.
 
 ### P4-pre / FA-106. Run the N6 simulation holdout backtest (F-3, evidence for FA-105)
 - **Jira:** FA-106 · Task · Priority High (unblocks FA-105) · 2 pts · Labels `databricks`, `backtest`, `data-gated` · Depends on FA-101 being deployed (otherwise it measures the broken serving path).

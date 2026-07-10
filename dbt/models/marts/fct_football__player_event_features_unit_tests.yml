@@ -42,6 +42,44 @@ unit_tests:
         - {fixture_id: 4, player_id: 7, appearances_l5_count: 3, minutes_l5: 270.0, shots_total_l5_count: 6.0, shots_total_l5_p90: 2.0, shots_total: 2.0}
         - {fixture_id: 5, player_id: 7, appearances_l5_count: 4, minutes_l5: 360.0, shots_total_l5_count: 8.0, shots_total_l5_p90: 2.0, shots_total: 50.0}
 
+  - name: player_event_features_eb_rates_shrink_and_exclude_current_fixture
+    description: >
+      FA-104 empirical-Bayes career rate: with exactly one strictly-prior
+      appearance the decay weight is exactly 1.0, so the numbers are
+      binary-exact. Fixture 1 (no history, no prior position-group data) must
+      yield 0.0 even though the fixture itself has 3 shots (leakage guard on
+      the player's own sums). Fixture 2 must yield
+      (1.0*3 + 5*prior) / (1.0*1 + 5) with the position-group prior = 3.0
+      (cumulative F-group rate strictly before fixture 2's date) = 3.0 — and
+      must ignore fixture 2's own 50 shots in both the career sums and the
+      prior (leakage guard on the position-group cumulative).
+    model: fct_football__player_event_features
+    given:
+      - input: ref('fct_football__player_match_features')
+        rows:
+          - {fixture_id: 1, fixture_date_utc: "2026-06-01 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "F", is_goalkeeper: false, games_minutes: 90, shots_total: 3}
+          - {fixture_id: 2, fixture_date_utc: "2026-06-05 18:00:00", team_id: 1, player_id: 7, is_starter: true, position_group: "F", is_goalkeeper: false, games_minutes: 90, shots_total: 50}
+      - input: ref('stg_football__lineups')
+        rows: []
+      - input: ref('fct_football__team_match_context')
+        rows: []
+      - input: ref('fct_football__team_elo_history')
+        rows: []
+      - input: ref('fct_football__player_elo_history')
+        rows: []
+      - input: ref('fct_football__lineup_elo_strength')
+        rows: []
+      - input: ref('fct_football__formation_matchup_history')
+        rows: []
+      - input: ref('fct_football__team_match_stats_context')
+        rows: []
+      - input: ref('fct_football__player_expected_minutes')
+        rows: []
+    expect:
+      rows:
+        - {fixture_id: 1, player_id: 7, shots_total_eb_p90: 0.0, goals_total_eb_p90: 0.0}
+        - {fixture_id: 2, player_id: 7, shots_total_eb_p90: 3.0, goals_total_eb_p90: 0.0}
+
   - name: player_event_features_inference_rows_use_current_player_elo_state
     description: >
       Serving-skew regression (prediction_quality_backlog FA-101 / E-2):

@@ -198,7 +198,12 @@ models:
       predictors are pre-match safe: Elo columns are _pre variants and the
       *_l5_count/_l5_p90 player history features come from the last 5 played
       appearances strictly prior to the fixture (ranked join, never the
-      current fixture). Replaced the former fct_football__player_shot_features
+      current fixture). The *_eb_p90 family (FA-104) carries empirical-Bayes
+      career per-90 rates: exponentially decayed sums (halflife 10
+      appearances) over ALL strictly-prior played appearances, shrunk toward
+      the strictly-prior position-group rate with pseudo-exposure k = 5 —
+      the low-noise player-identity signal complementing the L5 form window.
+      Replaced the former fct_football__player_shot_features
       mart (removed in backlog J1) as the canonical training source.
     tests:
       - unique_combination_of_columns:
@@ -226,6 +231,14 @@ models:
           - accepted_values:
               arguments:
                 values: ['G', 'D', 'M', 'F']
+      - name: shots_total_eb_p90
+        description: >
+          Empirical-Bayes career shots per 90 (FA-104): decayed strictly-prior
+          career sums shrunk toward the strictly-prior position-group rate.
+          One such column exists per target event (*_eb_p90); all follow the
+          same formula and leakage rule.
+        tests:
+          - not_null
       - name: exposure
         description: games_minutes / 90 for training rows; null on inference rows (use expected_exposure there).
       - name: expected_exposure

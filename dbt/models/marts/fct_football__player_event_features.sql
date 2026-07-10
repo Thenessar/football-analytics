@@ -7,6 +7,17 @@
 -- per-player current-state rows for inference rows (FA-101), so both paths
 -- carry the same feature family the registered models were trained on.
 
+{% set event_columns = [
+    'offsides', 'shots_total', 'shots_on', 'goals_total', 'goals_assists',
+    'goals_saves', 'passes_total', 'fouls_drawn', 'fouls_committed',
+    'cards_yellow', 'cards_red'
+] %}
+{# FA-104 empirical-Bayes constants: appearance-age decay halflife and the
+   prior pseudo-exposure (in 90-minute appearances) that anchors low-history
+   players to their position-group rate. #}
+{% set eb_halflife_appearances = 10.0 %}
+{% set eb_prior_strength = 5.0 %}
+
 with played as (
     select * from {{ ref('fct_football__player_match_features') }}
 ),
@@ -194,6 +205,70 @@ history_aggregates as (
     from prior_appearances
     where recency_rank <= 5
     group by fixture_id, team_id, player_id
+),
+
+-- FA-104: exponentially decayed career sums over ALL strictly-prior played
+-- appearances (decay by appearance age, halflife {{ eb_halflife_appearances }}
+-- appearances). Reuses the leakage-safe prior_appearances ranked join, so the
+-- current fixture can never feed its own career rate.
+eb_aggregates as (
+    select
+        fixture_id,
+        team_id,
+        player_id,
+        sum(pow(0.5, (recency_rank - 1) / {{ eb_halflife_appearances }}) * games_minutes / 90.0) as eb_weighted_exposure,
+        {% for event in event_columns %}
+        sum(pow(0.5, (recency_rank - 1) / {{ eb_halflife_appearances }}) * {{ event }}) as {{ event }}_eb_weighted_sum{% if not loop.last %},{% endif %}
+        {% endfor %}
+    from prior_appearances
+    group by fixture_id, team_id, player_id
+),
+
+-- Strictly-prior position-group per-90 rates: daily cumulative sums per
+-- position group, looked up as-of the base row's fixture date (same-date
+-- fixtures excluded, so the prior is leakage-safe by date). These anchor the
+-- empirical-Bayes shrinkage for players with little or no history.
+posgroup_running as (
+    select
+        position_group,
+        fixture_date_utc,
+        sum(sum(games_minutes / 90.0)) over (
+            partition by position_group
+            order by fixture_date_utc
+        ) as exposure_cum,
+        {% for event in event_columns %}
+        sum(sum({{ event }})) over (
+            partition by position_group
+            order by fixture_date_utc
+        ) as {{ event }}_cum{% if not loop.last %},{% endif %}
+        {% endfor %}
+    from played
+    group by position_group, fixture_date_utc
+),
+
+base_posgroup_dates as (
+    select distinct
+        position_group,
+        fixture_date_utc
+    from base
+),
+
+posgroup_prior as (
+    select
+        base_posgroup_dates.position_group,
+        base_posgroup_dates.fixture_date_utc,
+        {% for event in event_columns %}
+        coalesce(
+            max_by(posgroup_running.{{ event }}_cum, posgroup_running.fixture_date_utc)
+                / nullif(max_by(posgroup_running.exposure_cum, posgroup_running.fixture_date_utc), 0.0),
+            0.0
+        ) as {{ event }}_prior_p90{% if not loop.last %},{% endif %}
+        {% endfor %}
+    from base_posgroup_dates
+    left join posgroup_running
+        on base_posgroup_dates.position_group = posgroup_running.position_group
+       and posgroup_running.fixture_date_utc < base_posgroup_dates.fixture_date_utc
+    group by base_posgroup_dates.position_group, base_posgroup_dates.fixture_date_utc
 ),
 
 team_elo as (
@@ -385,16 +460,26 @@ select
     coalesce(history_aggregates.fouls_committed_l5_count, 0.0) as fouls_committed_l5_count,
     coalesce(history_aggregates.cards_yellow_l5_count, 0.0) as cards_yellow_l5_count,
     coalesce(history_aggregates.cards_red_l5_count, 0.0) as cards_red_l5_count,
-    {% for event in [
-        'offsides', 'shots_total', 'shots_on', 'goals_total', 'goals_assists',
-        'goals_saves', 'passes_total', 'fouls_drawn', 'fouls_committed',
-        'cards_yellow', 'cards_red'
-    ] %}
+    {% for event in event_columns %}
     case
         when coalesce(history_aggregates.minutes_l5, 0) > 0
         then coalesce(history_aggregates.{{ event }}_l5_count, 0.0) * 90.0 / history_aggregates.minutes_l5
         else 0.0
     end as {{ event }}_l5_p90,
+    {% endfor %}
+
+    -- Empirical-Bayes career per-90 rates (FA-104): the low-noise player
+    -- identity signal — decayed career sums shrunk toward the strictly-prior
+    -- position-group rate with pseudo-exposure k = {{ eb_prior_strength }}
+    -- ninety-minute appearances. Same formula for training and inference rows
+    -- (both derive purely from strictly-prior played appearances), so the
+    -- family is serving-skew-free by construction. The L5 window above stays
+    -- as the short-term form signal.
+    {% for event in event_columns %}
+    (
+        coalesce(eb_aggregates.{{ event }}_eb_weighted_sum, 0.0)
+        + {{ eb_prior_strength }} * coalesce(posgroup_prior.{{ event }}_prior_p90, 0.0)
+    ) / (coalesce(eb_aggregates.eb_weighted_exposure, 0.0) + {{ eb_prior_strength }}) as {{ event }}_eb_p90,
     {% endfor %}
 
     team_flow.team_possession_l5_avg,
@@ -438,6 +523,13 @@ left join history_aggregates
     on base.fixture_id = history_aggregates.fixture_id
    and base.team_id = history_aggregates.team_id
    and base.player_id = history_aggregates.player_id
+left join eb_aggregates
+    on base.fixture_id = eb_aggregates.fixture_id
+   and base.team_id = eb_aggregates.team_id
+   and base.player_id = eb_aggregates.player_id
+left join posgroup_prior
+    on base.position_group = posgroup_prior.position_group
+   and base.fixture_date_utc = posgroup_prior.fixture_date_utc
 left join team_elo
     on base.fixture_id = team_elo.fixture_id
    and base.team_id = team_elo.team_id
