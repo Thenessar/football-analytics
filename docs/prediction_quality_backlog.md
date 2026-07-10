@@ -43,9 +43,11 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | 🟨 CODE LANDED (2026-07-11) — evidence runs pending deploy |
 | FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ⬛ BLOCKED (2026-07-11) — prod deploy needs user approval |
 | FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | 🟨 CODE LANDED (2026-07-11) — anchor OFF (w=0) until FA-106 fits w |
-| FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | ⬜ TODO |
+| FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | ⬛ BLOCKED (2026-07-11) — all four tasks need the deployed stack |
 
 **What to do next:** pick the highest ticket in this table whose dependencies are all ✅ DONE. Start with **FA-101 and FA-103 in parallel** (no dependencies). FA-101 requires **no retraining** — the models were trained on good features; serving just has to supply them (the +52% sweep in E-3 is recovered immediately). FA-104 raises the discrimination ceiling; FA-105 differentiates fixtures. FA-102/FA-103 make sure this class of bug can never ship silently again. When a ticket lands, flip its Status here to ✅ DONE (date) in the same commit, per Working Agreement.
+
+**State as of 2026-07-11:** all code-side work through FA-105 is on `main` and green (pytest + dbt parse; dbt unit tests run in the next `dbt build`). Everything left funnels through **one human gate: the prod bundle deploy** (`databricks bundle deploy -t prod --var="sql_warehouse_id=eec07ef59d758b5d"` + `databricks bundle run international_medallion_pipeline -t prod --var=...`) — an agent in auto mode cannot authorize it. After that single deploy (one quota day, batched): FA-101's before/after spread check, FA-102's real-data parity table, FA-104's backtest + tuning evidence (notes step 2–4), FA-106's holdout run + w-sweep, FA-105's w adoption, then FA-107's retrain/re-register/live verification.
 
 Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4.8. Predicting the full spread is FA-104's job, and even then a correct conditional mean sits *between* the L5 average and the population rate — the L5 window is a noisy estimator and some shrinkage is statistically right.
 
