@@ -15,7 +15,7 @@ from football_analytics.databricks.config import DatabricksPipelineConfig, load_
 from football_analytics.databricks.logging import configure_json_logging
 from football_analytics.databricks.tables import table_name
 from football_analytics.databricks_ingestion import utc_now_iso
-from football_analytics.inference import PREDICTION_TABLE_NAME, load_team_dispersion_tags
+from football_analytics.inference import PREDICTION_TABLE_NAME, load_dispersion_tags
 from football_analytics.simulation import (
     SIMULATION_TABLE_NAME,
     SimulationConfig,
@@ -33,6 +33,9 @@ dbutils.widgets.text("n_sims", "10000")
 dbutils.widgets.text("seed", "7")
 # FA-105 Elo goal anchor blend weight; 0.0 = disabled until FA-106 fits it.
 dbutils.widgets.text("team_goal_anchor_weight", "0.0")
+# FA-108 per-player allocation dispersion; comma-separated volume targets
+# (e.g. "passes_total"). Empty = disabled until the N6 re-run validates it.
+dbutils.widgets.text("player_dispersion_targets", "")
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
@@ -53,6 +56,11 @@ n_sims = max(100, int(dbutils.widgets.get("n_sims").strip() or "10000"))
 seed = int(dbutils.widgets.get("seed").strip() or "7")
 team_goal_anchor_weight = float(
     dbutils.widgets.get("team_goal_anchor_weight").strip() or "0.0"
+)
+player_dispersion_targets = tuple(
+    part.strip()
+    for part in dbutils.widgets.get("player_dispersion_targets").split(",")
+    if part.strip()
 )
 run_id = dbutils.widgets.get("run_id").strip() or f"simulation-{utc_now_iso()}"
 logger = configure_json_logging(level=logging.INFO, logger_name="football_analytics.fixture_simulation")
@@ -83,6 +91,7 @@ sim_config = SimulationConfig(
     n_sims=n_sims,
     seed=seed,
     team_goal_anchor_weight=team_goal_anchor_weight,
+    player_dispersion_targets=player_dispersion_targets,
 )
 results = []
 if active_predictions.empty:
@@ -112,13 +121,16 @@ else:
                 .itertuples()
             }
             try:
-                alpha_team = load_team_dispersion_tags(model_versions)
+                dispersion_tags = load_dispersion_tags(model_versions)
+                alpha_team = dispersion_tags["alpha_team"]
+                alpha_player = dispersion_tags["alpha_player"]
             except Exception as exc:
                 logger.warning(
-                    "alpha_team_tags_unavailable",
-                    extra={"event": "alpha_team_tags_unavailable", "reason": str(exc)},
+                    "dispersion_tags_unavailable",
+                    extra={"event": "dispersion_tags_unavailable", "reason": str(exc)},
                 )
                 alpha_team = {}
+                alpha_player = {}
 
             fixture_anchors = {
                 int(row.team_id): float(row.expected_goals_for_pre)
@@ -130,6 +142,7 @@ else:
             inputs = build_simulation_inputs(
                 fixture_rows,
                 alpha_team=alpha_team,
+                alpha_player=alpha_player,
                 expected_team_goals=fixture_anchors,
             )
             sim_set_id = deterministic_sim_set_id(

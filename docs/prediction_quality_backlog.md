@@ -44,6 +44,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ✅ DONE (2026-07-11) |
 | FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | ✅ DONE (2026-07-11) — evidence says **keep w = 0**; anchor machinery retained |
 | FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | ⬛ BLOCKED (2026-07-11) — all four tasks need the deployed stack |
+| FA-108 | P6 — Per-player NB dispersion in sim allocation (passes coverage fix) | Croupier | FA-106 (evidence) | 🟨 CODE LANDED (2026-07-11) — default off; N6 re-run pending (user-run) |
 
 **What to do next:** pick the highest ticket in this table whose dependencies are all ✅ DONE. Start with **FA-101 and FA-103 in parallel** (no dependencies). FA-101 requires **no retraining** — the models were trained on good features; serving just has to supply them (the +52% sweep in E-3 is recovered immediately). FA-104 raises the discrimination ceiling; FA-105 differentiates fixtures. FA-102/FA-103 make sure this class of bug can never ship silently again. When a ticket lands, flip its Status here to ✅ DONE (date) in the same commit, per Working Agreement.
 
@@ -164,7 +165,7 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   | 1.00 | 0.982 / 0.039 | 0.956 / 0.043 | 0.983 / 0.037 | 0.810 | 0.932 |
 
 - **Findings against the ADR 0005 revisit triggers:**
-  1. **passes_total is genuinely miscalibrated low** — 0.581 coverage at 0.80 nominal with PIT max deviation 0.189: per-player passes intervals are far too narrow. This is the one real trigger hit; follow-up recorded for FA-107/next backlog (candidate: per-player NB dispersion in allocation, not just team-level alpha).
+  1. **passes_total is genuinely miscalibrated low** — 0.581 coverage at 0.80 nominal with PIT max deviation 0.189: per-player passes intervals are far too narrow. This is the one real trigger hit; the fix (per-player NB dispersion in allocation, not just team-level alpha) landed as **FA-108** — default off pending the re-run below.
   2. The `outside_acceptance_band` flags on goals/cards/offsides are **discreteness over-coverage** (10–90% quantiles on low-mean counts), not miscalibration — their PIT deviations are ≤ 0.015 at w = 0. shots_total (0.907, PIT 0.055) and fouls (PIT 0.064–0.074) are marginal but acceptable.
   3. Report gap noted: `score_simulation_backtest` emits team coverage + mean_actual but no simulated-vs-actual team mean bias column; add one if the anchor question is ever reopened.
 
@@ -192,6 +193,19 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   4. Verify the first live fixture with `mon_football__prediction_vs_actual`, `mon_football__inference_feature_health` (FA-103), and the FA-102 parity delta.
 - **Acceptance criteria:** per-item numbers recorded in this file; the ml_upgrade_backlog Follow-Ups table updated to point here; new versions serving with a demonstrably player-differentiated spread on a live fixture (top-l5 player ≫ team median, recorded).
 
+### P6 / FA-108. Per-player NB dispersion in the simulation allocation (fixes the FA-106 passes_total coverage trigger)
+- **Jira:** FA-108 · Story · Priority High · 3 pts · Labels `simulation`, `monte-carlo` · Depends on FA-106 (evidence source); independent of FA-107. Real-data validation shares the FA-107 quota batch.
+- **Agent persona — "Croupier"** (same as FA-105): simulation engineer with a quant-sports background — vectorized Monte Carlo, NB via Poisson–Gamma, obsessive about invariants tests and bit-identical seeds.
+- **Files:** `football_analytics/simulation.py`, `football_analytics/simulation_backtest.py`, `football_analytics/inference.py` (`load_dispersion_tags`), `notebooks/05_fixture_simulation.py`, `scripts/backtest_simulation.py`, `tests/test_simulation.py`, `tests/test_simulation_backtest.py`, ADR 0005 amendment (engine 1.2.0).
+- **Problem (FA-106 evidence):** `passes_total` player 80% interval coverage 0.581 at 0.80 nominal, PIT max deviation 0.189 — the one real ADR 0005 revisit trigger. Structural cause: multinomial allocation conditions on the team total, capping player variance near `μ·(1−share)` + a share²-scaled team-dispersion term, while real per-player variance is `μ + α_player·μ²` (M1 measures `alpha_player > alpha_team` everywhere — team totals average heterogeneity out). The shortfall scales with μ², so only high-count passes tripped the trigger.
+- **Design:** `sample_dispersed_allocation_weights` — for targets in `SimulationConfig.player_dispersion_targets`, multiply each player's allocation weight by an i.i.d. mean-1 `Gamma(1/α_player, α_player)` multiplier between the team-total draw and the multinomial split (a generalized Dirichlet-multinomial). Player marginals gain `≈ α_player·μ²` variance; expected shares, structural chains, and the measured-`alpha_team` NB team-total draw are untouched, so the healthy team calibration is preserved by construction. A single-concentration Dirichlet-multinomial was rejected (one concentration cannot match heterogeneous player shares; the gamma multipliers give every player his own `α·μ_p²` automatically), as was drawing the total from the perturbed Poisson sum (would imply team dispersion instead of honoring the M1 `alpha_team` contract).
+- **Gating & lineage:** default `player_dispersion_targets = ()` — **OFF, bit-identical to engine 1.1.0** (the helper consumes no randomness when gated off or when `α_player` is unfitted/0). The tuple is in the config digest (order-insensitive) and `SIMULATION_ENGINE_VERSION` bumped to **1.2.0**, so dispersed sim sets supersede v1 sets. `alpha_player` plumbing mirrors `alpha_team`: version tags → `load_dispersion_tags` (one registry call reads both tags; notebook 05 widget `player_dispersion_targets`) / `LoadedEventModel.alpha_player` → `SimulationInputs.alpha_player`; `scripts/backtest_simulation.py --player-dispersion-targets passes_total` for the re-run.
+- **Synthetic evidence (2026-07-11, tests; NB(α=0.3) passes world, 20 fixtures / 440 players / 40 team-fixtures, n_sims 1500, seed 79):** v1 allocation reproduces the FA-106 symptom — player coverage **0.405**, PIT deviation **0.232**; layer on restores **0.798** coverage at 0.80 nominal, PIT deviation **0.023**; shots_total (0.905/0.032) and team passes coverage (0.825) identical in both runs. Unit-level: starter passes variance 40.1 → 184.0 vs NB target 200 (finite-team normalization ≈ (1−share)²; team-total mean/variance unchanged). Suite: invariants parametrized over the gate, bit-identical no-op with the flag off, determinism under seed with it on, digest sensitivity/order-insensitivity, weight-moment checks.
+- **Acceptance criteria (remaining for ✅ DONE — needs the deployed stack, user-run on Databricks):**
+  1. Re-run N6 on the latest completed season, both arms, same seed: `python scripts/backtest_simulation.py --season <latest> [--player-dispersion-targets passes_total]` (control arm optional — FA-106's w=0 run is the standing baseline; one quota batch with the FA-107 runs).
+  2. Adopt if passes_total player coverage lands in **[0.70, 0.90]** with PIT deviation materially down (< ~0.08) and no other target's coverage/PIT/allocation degrades beyond noise. Record before/after numbers here.
+  3. On adoption: flip the defaults — notebook 05 widget + `resources/*.yml` job param to `passes_total` (leave `SimulationConfig` default empty; adoption is a deployment decision, mirroring FA-105's w handling) — and update the ADR 0005 amendment with the real-data outcome.
+
 ---
 
 ## Dependency graph (Jira ids)
@@ -200,8 +214,9 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
 FA-101 (P1, no deps) ──→ FA-102 (P2a, parity delta ≈ 0 gate) ──→ FA-104 (P3) ──→ FA-107 (P5)
 FA-101 ────────────────→ FA-104
 FA-101 deployed ───────→ FA-106 (P4-pre, F-3 run) ──→ FA-105 (P4)
+FA-106 ────────────────→ FA-108 (P6, passes dispersion; validation rides the FA-107 quota batch)
 FA-103 (P2b) — no deps, start in parallel with FA-101
 FA-105 and FA-102/FA-104 are independent branches
 ```
 
-**Sprint order:** FA-101 + FA-103 now → FA-102 → FA-104 ∥ (FA-106 → FA-105) → FA-107.
+**Sprint order:** FA-101 + FA-103 now → FA-102 → FA-104 ∥ (FA-106 → FA-105) → FA-108 → FA-107.

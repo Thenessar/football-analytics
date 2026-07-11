@@ -30,7 +30,7 @@ class SignalBooster:
         return np.log(np.clip(X[self.column].to_numpy(dtype=float), 1e-6, None))
 
 
-def _models():
+def _models(passes_alpha_player=0.0, passes_alpha_team=0.0):
     return [
         LoadedEventModel(
             target_event=target,
@@ -39,13 +39,20 @@ def _models():
             model_name=f"catalog.gold.player_event__{target}",
             model_version="1",
             goalkeeper_only=(target == "goals_saves"),
+            alpha_player=passes_alpha_player if target == "passes_total" else 0.0,
+            alpha_team=passes_alpha_team if target == "passes_total" else 0.0,
         )
         for target in ALL_SIMULATION_TARGETS
     ]
 
 
-def _feature_rows(n_fixtures=20, seed=61):
-    """Completed fixtures whose labels follow the models' rates exactly."""
+def _feature_rows(n_fixtures=20, seed=61, passes_dispersion=0.0):
+    """Completed fixtures whose labels follow the models' rates exactly.
+
+    ``passes_dispersion > 0`` switches passes labels from Poisson(rate) to
+    NB(rate, alpha) via the Poisson–Gamma mixture — the player-heterogeneous
+    world the FA-108 dispersion layer must recover.
+    """
 
     rng = np.random.default_rng(seed)
     rows = []
@@ -77,6 +84,11 @@ def _feature_rows(n_fixtures=20, seed=61):
                     for target, rate in rates.items()
                     if target not in ("cards_red", "goals_saves")
                 }
+                if passes_dispersion > 0.0:
+                    labels["passes_total"] = float(rng.poisson(
+                        rates["passes_total"]
+                        * rng.gamma(1.0 / passes_dispersion, passes_dispersion)
+                    ))
                 labels["cards_red"] = float(rng.random() < rates["cards_red"])
                 # GK saves label drawn from the identity-consistent marginal:
                 # Poisson(sum of opponent on-target rates x miss share).
@@ -142,6 +154,52 @@ def test_team_totals_and_allocation_are_scored(backtest_report):
     # random-pick baseline comfortably.
     assert allocation.loc["shots_total", "top1_hit_rate"] > 0.2
     assert allocation.loc["shots_total", "top3_hit_rate"] > allocation.loc["shots_total", "top1_hit_rate"]
+
+
+def test_player_dispersion_layer_restores_passes_calibration_in_an_nb_world():
+    # FA-108: real passes counts are NB-overdispersed per player, and the
+    # plain multinomial allocation then under-covers exactly like the FA-106
+    # holdout run (0.581 at 0.80 nominal, PIT deviation 0.189). In a synthetic
+    # NB world the flag must restore nominal coverage and a uniform PIT while
+    # the team-total calibration stays intact.
+    alpha = 0.3
+    feature_rows = _feature_rows(seed=67, passes_dispersion=alpha)
+    # alpha_team ~ alpha * sum(w^2)/W^2: the team-level trace the player
+    # heterogeneity leaves on 11-player totals (cf. ADR 0005 note on
+    # alpha_team < alpha_player).
+    models = _models(passes_alpha_player=alpha, passes_alpha_team=0.03)
+
+    off_results, _ = simulate_completed_fixtures(
+        feature_rows, models, config=SimulationConfig(n_sims=1500, seed=79)
+    )
+    on_results, _ = simulate_completed_fixtures(
+        feature_rows,
+        models,
+        config=SimulationConfig(
+            n_sims=1500, seed=79, player_dispersion_targets=("passes_total",)
+        ),
+    )
+    off_cov = (
+        score_simulation_backtest(off_results, feature_rows)["player_coverage"]
+        .set_index("target_event")
+    )
+    on_report = score_simulation_backtest(on_results, feature_rows)
+    on_cov = on_report["player_coverage"].set_index("target_event")
+
+    # Off reproduces the FA-106 symptom: far-too-narrow player intervals.
+    assert off_cov.loc["passes_total", "coverage"] < 0.60
+    assert off_cov.loc["passes_total", "pit_max_abs_deviation"] > 0.12
+
+    # On restores the nominal band and PIT uniformity...
+    assert 0.74 <= on_cov.loc["passes_total", "coverage"] <= 0.93
+    assert on_cov.loc["passes_total", "pit_max_abs_deviation"] < 0.08
+    # ...without disturbing an already-calibrated target.
+    assert 0.78 <= on_cov.loc["shots_total", "coverage"] <= 0.99
+
+    # Team passes totals stay calibrated with the layer on — the NB team
+    # draw with the measured alpha_team is untouched by the allocation layer.
+    team_on = on_report["team_coverage"].set_index("target_event")
+    assert team_on.loc["passes_total", "coverage"] >= 0.65
 
 
 def test_backtest_skips_fixtures_without_full_lineups():

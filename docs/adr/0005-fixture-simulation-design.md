@@ -142,7 +142,56 @@ backtest evidence of team-total bias, and add a simulated-vs-actual team
 mean bias column to `score_simulation_backtest` when doing so. Real trigger
 hit by the same run: `passes_total` player intervals are far too narrow
 (0.581 coverage at 0.80 nominal, PIT deviation 0.189) — revisit
-simplification 3/6 for passes with per-player dispersion.
+simplification 3/6 for passes with per-player dispersion (landed as the
+engine 1.2.0 amendment below, FA-108; off pending the N6 re-run).
+
+## Amendment (2026-07-11, engine 1.2.0): per-player allocation dispersion — FA-108
+
+The FA-106 holdout run hit one real revisit trigger: `passes_total` player
+80% interval coverage 0.581 (nominal 0.80), PIT max deviation 0.189. The
+cause is structural: the multinomial allocation conditions on the team
+total, so a player's variance is capped near `μ·(1−share)` plus a small
+share²-scaled team-dispersion term — for high-count events (passes means
+25–70) that is far below the real per-player variance `μ + α_player·μ²`
+measured by M1. This is the flip side of the simplification-2 note
+(`alpha_team < alpha_player` everywhere): team totals average out player
+heterogeneity, so honoring `alpha_team` alone under-disperses individuals,
+and the shortfall scales with μ² — which is why only passes tripped the
+trigger.
+
+The fix (`sample_dispersed_allocation_weights`): for targets listed in
+`SimulationConfig.player_dispersion_targets`, each player's allocation
+weight is multiplied by an i.i.d. mean-1 `Gamma(1/α_player, α_player)`
+multiplier between the team-total draw and the multinomial split — a
+generalized Dirichlet-multinomial allocation. Player marginals gain the NB
+quadratic term (`≈ α_player·μ²` extra variance; exactly NB if the total
+were Poisson at the perturbed sum), while expected shares, the structural
+chains, and the NB(`alpha_team`) team-total draw are untouched — team
+calibration, which FA-106 showed is healthy, is preserved by construction.
+The alternative of drawing the total from the perturbed Poisson sum was
+rejected: it would *imply* team dispersion (≈ α_player/n_eff) instead of
+honoring the measured `alpha_team` contract from M1.
+
+- Applies to the step-3 allocation of the four volume events
+  (`shots_total`, `passes_total`, `offsides`, `cards_yellow`); the shot
+  chain propagates upstream dispersion automatically via thinning.
+- `player_dispersion_targets` participates in the config digest
+  (order-insensitively) and `SIMULATION_ENGINE_VERSION` is 1.2.0, so
+  dispersed sim sets supersede v1 sets cleanly. **Default: empty — OFF
+  until the N6 re-run validates the real-data coverage** (evidence-gated;
+  backlog FA-108). With the flag off, or without a fitted `α_player`, the
+  engine is draw-for-draw identical to 1.1.0 (the helper consumes no
+  randomness).
+- `alpha_player` flows exactly like `alpha_team`: model-version tags →
+  `load_dispersion_tags` (notebook 05) / `LoadedEventModel.alpha_player`
+  (backtest) → `SimulationInputs.alpha_player`.
+- Synthetic validation (tests, 440 players / 40 team-fixtures): in an
+  NB(α=0.3) passes world the v1 allocation reproduces the symptom (0.405
+  coverage, PIT deviation 0.232); with the layer on, coverage is 0.798 at
+  0.80 nominal with PIT deviation 0.023, shots and team-total calibration
+  unchanged. Finite-team normalization keeps realized player variance at
+  ~0.92× the naive `μ + α·μ²` target (the (1−share)² factor) — immaterial
+  at N6 tolerances.
 
 ## Output
 

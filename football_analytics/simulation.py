@@ -24,7 +24,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-SIMULATION_ENGINE_VERSION = "1.1.0"
+SIMULATION_ENGINE_VERSION = "1.2.0"
 SIMULATION_TABLE_NAME = "sim_football__fixture_simulation"
 
 # All 11 targets the simulator emits, grouped by sampling treatment.
@@ -65,6 +65,12 @@ class SimulationConfig:
     # goal model (w * expected_goals_for_pre + (1-w) * sum of player means).
     # 0.0 disables the anchor; keep it 0 until the FA-106 backtest fits it.
     team_goal_anchor_weight: float = 0.0
+    # FA-108: volume targets whose allocation weights get per-player NB
+    # dispersion (gamma multipliers with the model's alpha_player) — fixes
+    # the too-narrow passes_total player intervals found by the FA-106
+    # holdout run. Empty = v1 allocation; keep it empty until the N6 re-run
+    # validates the coverage on real data.
+    player_dispersion_targets: Tuple[str, ...] = ()
 
     def digest(self) -> str:
         payload = {
@@ -75,6 +81,11 @@ class SimulationConfig:
             "max_yellow_per_player": int(self.max_yellow_per_player),
             "max_red_probability": float(self.max_red_probability),
             "team_goal_anchor_weight": float(self.team_goal_anchor_weight),
+            # Sorted: the layer applies per target in fixed loop order, so
+            # differently-ordered tuples are behaviorally identical.
+            "player_dispersion_targets": sorted(
+                str(target) for target in self.player_dispersion_targets
+            ),
             "engine_version": SIMULATION_ENGINE_VERSION,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -96,6 +107,10 @@ class SimulationInputs:
     players: pd.DataFrame
     team_ids: Tuple[int, int]
     alpha_team: Dict[str, float] = field(default_factory=dict)
+    # M1 player-level NB dispersions per target (str keys, mirroring
+    # alpha_team); consumed by the FA-108 allocation dispersion layer for
+    # the targets listed in SimulationConfig.player_dispersion_targets.
+    alpha_player: Dict[str, float] = field(default_factory=dict)
     # Elo-layer expected team goals per team_id (stringified key, matching
     # alpha_team's convention); consumed by the FA-105 totals anchor.
     expected_team_goals: Dict[str, float] = field(default_factory=dict)
@@ -128,6 +143,7 @@ def build_simulation_inputs(
     active_predictions: pd.DataFrame,
     *,
     alpha_team: Optional[Mapping[str, float]] = None,
+    alpha_player: Optional[Mapping[str, float]] = None,
     expected_team_goals: Optional[Mapping[Any, float]] = None,
 ) -> SimulationInputs:
     """Pivots one fixture's active prediction set into simulation inputs.
@@ -241,6 +257,9 @@ def build_simulation_inputs(
         alpha_team={
             str(k): max(0.0, float(v)) for k, v in dict(alpha_team or {}).items()
         },
+        alpha_player={
+            str(k): max(0.0, float(v)) for k, v in dict(alpha_player or {}).items()
+        },
         expected_team_goals={
             str(int(k)): float(v)
             for k, v in dict(expected_team_goals or {}).items()
@@ -291,6 +310,30 @@ def sample_nb_totals(
         rates = rng.gamma(1.0 / alpha, alpha * means)
         return rng.poisson(rates).astype(np.int64)
     return rng.poisson(means).astype(np.int64)
+
+
+def sample_dispersed_allocation_weights(
+    rng: np.random.Generator,
+    weights: np.ndarray,
+    alpha: float = 0.0,
+) -> np.ndarray:
+    """Gamma-perturbed allocation weights for player-level NB dispersion (FA-108).
+
+    Each weight is multiplied by an i.i.d. mean-1 multiplier
+    ``Gamma(1/alpha, alpha)`` (variance ``alpha`` — the same Poisson–Gamma
+    parametrization as ``sample_nb_totals``), turning the multinomial split
+    into a generalized Dirichlet-multinomial: player marginals gain the NB
+    quadratic term (``≈ alpha * mean²`` extra variance — exactly NB if the
+    total were Poisson at the perturbed sum) while expected shares and the
+    team-total draw are untouched. With ``alpha <= 0`` the weights come back
+    unchanged and **no randomness is consumed** — the exact bit-identical
+    no-op the ``player_dispersion_targets`` config gate relies on.
+    """
+
+    if not alpha or alpha <= 0.0:
+        return weights
+    weights = np.clip(np.asarray(weights, dtype=float), 0.0, None)
+    return weights * rng.gamma(1.0 / alpha, alpha, size=weights.shape)
 
 
 def multinomial_allocate(
@@ -427,6 +470,7 @@ def apply_team_goal_anchor(
         players=players,
         team_ids=inputs.team_ids,
         alpha_team=inputs.alpha_team,
+        alpha_player=inputs.alpha_player,
         expected_team_goals=inputs.expected_team_goals,
     )
 
@@ -439,7 +483,8 @@ def simulate_fixture(
 
     Draw order is fixed, so identical inputs + config are bit-identical:
     minutes → volume events (shots_total, passes_total, offsides,
-    cards_yellow) → shot chain thinning → fouls mirror → saves identity →
+    cards_yellow; per team: total → optional FA-108 weight perturbation →
+    allocation) → shot chain thinning → fouls mirror → saves identity →
     assists → red cards. Goal intensities are anchored to the Elo goal model
     first when the config enables it (FA-105).
     """
@@ -464,15 +509,27 @@ def simulate_fixture(
     counts: Dict[str, np.ndarray] = {}
 
     # 1. Volume events: NB team total → multinomial allocation, per team.
+    # Targets in config.player_dispersion_targets get their allocation
+    # weights gamma-perturbed per player between the total draw and the
+    # split (FA-108), so player marginals carry the M1 alpha_player
+    # dispersion while the team total keeps its measured alpha_team draw.
     for target in ("shots_total", "passes_total", "offsides", "cards_yellow"):
         alpha = inputs.alpha_team.get(target, 0.0)
+        alpha_player = (
+            inputs.alpha_player.get(target, 0.0)
+            if target in cfg.player_dispersion_targets
+            else 0.0
+        )
         allocated_all = np.zeros((n_players, cfg.n_sims), dtype=np.int64)
         raw_weights = weights_for(target)
         for team_id, mask in team_masks.items():
             team_weights = np.where(mask[:, None], raw_weights, 0.0)
             totals = sample_nb_totals(rng, team_weights.sum(axis=0), alpha)
+            allocation_weights = sample_dispersed_allocation_weights(
+                rng, team_weights, alpha_player
+            )
             allocated, _ = allocate_event_totals(
-                rng, totals, team_weights, mask[:, None] & on_pitch
+                rng, totals, allocation_weights, mask[:, None] & on_pitch
             )
             allocated_all += allocated
         counts[target] = allocated_all

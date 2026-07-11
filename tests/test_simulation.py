@@ -12,6 +12,7 @@ from football_analytics.simulation import (
     build_simulation_inputs,
     deterministic_sim_set_id,
     multinomial_allocate,
+    sample_dispersed_allocation_weights,
     sample_minutes,
     sample_nb_totals,
     simulate_fixture,
@@ -205,11 +206,134 @@ def test_allocation_repairs_zero_weight_and_empty_pitch_edges():
     assert counts[:, 1].sum() == 0
 
 
-def test_simulated_game_satisfies_every_structural_invariant():
+def test_inputs_clamp_player_dispersions_like_team_dispersions():
     inputs = build_simulation_inputs(
-        _active_predictions(), alpha_team={"shots_total": 0.2, "fouls_committed": 0.1}
+        _active_predictions(),
+        alpha_team={"passes_total": -0.2, "shots_total": 0.4},
+        alpha_player={"passes_total": -0.5, "shots_total": 0.3},
     )
-    config = SimulationConfig(n_sims=1000, seed=17)
+    assert inputs.alpha_team == {"passes_total": 0.0, "shots_total": 0.4}
+    assert inputs.alpha_player == {"passes_total": 0.0, "shots_total": 0.3}
+
+
+def test_dispersed_allocation_weights_are_mean_preserving_gamma_noise():
+    rng = np.random.default_rng(51)
+    weights = np.tile(np.array([[4.0], [0.0], [2.0]]), (1, 100_000))
+
+    # alpha <= 0 is the exact no-op: same object back, no randomness drawn.
+    assert sample_dispersed_allocation_weights(rng, weights, 0.0) is weights
+
+    dispersed = sample_dispersed_allocation_weights(rng, weights, 0.25)
+    # Multipliers are mean-1 with variance alpha: E[v] = w, Var[v] = alpha*w^2.
+    assert dispersed[0].mean() == pytest.approx(4.0, rel=0.02)
+    assert dispersed[0].var() == pytest.approx(0.25 * 16.0, rel=0.05)
+    assert dispersed[2].mean() == pytest.approx(2.0, rel=0.02)
+    # Zero weights stay exactly zero (other team / off pitch).
+    assert (dispersed[1] == 0.0).all()
+
+
+def test_player_dispersion_is_config_gated_deterministic_and_digest_tracked():
+    predictions = _active_predictions()
+    with_alpha = build_simulation_inputs(
+        predictions, alpha_player={"passes_total": 0.4}
+    )
+    plain = build_simulation_inputs(predictions)
+    base_config = SimulationConfig(n_sims=300, seed=5)
+    flagged = SimulationConfig(
+        n_sims=300, seed=5, player_dispersion_targets=("passes_total",)
+    )
+
+    # Flag off: a fitted alpha_player on the inputs changes nothing, bitwise.
+    baseline = simulate_fixture(plain, base_config)
+    gated = simulate_fixture(with_alpha, base_config)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(gated.counts[target], baseline.counts[target])
+
+    # Flag on without a fitted alpha: still bit-identical (no draws consumed).
+    unfitted = simulate_fixture(plain, flagged)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(unfitted.counts[target], baseline.counts[target])
+
+    # Flag on with a fitted alpha: passes draws actually change, and the run
+    # is deterministic under the seed.
+    first = simulate_fixture(with_alpha, flagged)
+    second = simulate_fixture(with_alpha, flagged)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(first.counts[target], second.counts[target])
+    assert (first.counts["passes_total"] != baseline.counts["passes_total"]).any()
+
+    # The gate participates in the config digest (dispersed sim sets replace
+    # v1 sets), order-insensitively — same behavior means same digest.
+    assert flagged.digest() != base_config.digest()
+    assert SimulationConfig(
+        player_dispersion_targets=("passes_total", "shots_total")
+    ).digest() == SimulationConfig(
+        player_dispersion_targets=("shots_total", "passes_total")
+    ).digest()
+
+
+def test_player_dispersion_adds_nb_variance_without_moving_means_or_totals():
+    alpha = 0.1
+    inputs = build_simulation_inputs(
+        _active_predictions(), alpha_player={"passes_total": alpha}
+    )
+    base = simulate_fixture(inputs, SimulationConfig(n_sims=30000, seed=29))
+    dispersed = simulate_fixture(
+        inputs,
+        SimulationConfig(
+            n_sims=30000, seed=29, player_dispersion_targets=("passes_total",)
+        ),
+    )
+
+    # shots_total draws before passes_total in the fixed order, so its rng
+    # stream — and therefore its counts — stay bit-identical with the layer on.
+    np.testing.assert_array_equal(
+        dispersed.counts["shots_total"], base.counts["shots_total"]
+    )
+
+    starters = inputs.players["is_starting"].to_numpy()
+    mu = 40.0  # rate90 40 x 90 minutes
+
+    # Player means are preserved (shares are mean-1 perturbed)...
+    base_means = base.counts["passes_total"][starters].mean(axis=1)
+    dispersed_means = dispersed.counts["passes_total"][starters].mean(axis=1)
+    assert dispersed_means == pytest.approx(base_means, rel=0.03)
+
+    # ...while player variance moves from the compressed multinomial
+    # conditional level to the NB target mu + alpha*mu^2 (finite-team
+    # normalization keeps the realized inflation slightly below the naive
+    # target — the (1-share)^2 factor).
+    nb_variance = mu + alpha * mu**2
+    base_var = float(base.counts["passes_total"][starters].var(axis=1).mean())
+    dispersed_var = float(
+        dispersed.counts["passes_total"][starters].var(axis=1).mean()
+    )
+    assert base_var < 0.35 * nb_variance
+    assert 0.80 * nb_variance < dispersed_var < 1.05 * nb_variance
+
+    # Team totals keep their distribution — the layer only spreads the
+    # allocation, it never touches the NB total draw.
+    for team_id in inputs.team_ids:
+        base_totals = base.team_totals("passes_total", team_id)
+        dispersed_totals = dispersed.team_totals("passes_total", team_id)
+        assert dispersed_totals.mean() == pytest.approx(base_totals.mean(), rel=0.02)
+        assert dispersed_totals.var() == pytest.approx(base_totals.var(), rel=0.06)
+
+
+@pytest.mark.parametrize(
+    "dispersion_targets",
+    [(), ("passes_total", "shots_total")],
+    ids=["v1_allocation", "player_dispersion_on"],
+)
+def test_simulated_game_satisfies_every_structural_invariant(dispersion_targets):
+    inputs = build_simulation_inputs(
+        _active_predictions(),
+        alpha_team={"shots_total": 0.2, "fouls_committed": 0.1},
+        alpha_player={"shots_total": 0.15, "passes_total": 0.25},
+    )
+    config = SimulationConfig(
+        n_sims=1000, seed=17, player_dispersion_targets=dispersion_targets
+    )
     result = simulate_fixture(inputs, config)
 
     counts = result.counts

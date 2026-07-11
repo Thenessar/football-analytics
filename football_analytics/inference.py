@@ -337,16 +337,18 @@ def _tag_float(tags: Mapping[str, str], name: str, default: float = 0.0) -> floa
         return default
 
 
-def load_team_dispersion_tags(
+def load_dispersion_tags(
     model_versions: Mapping[str, tuple[str, str]],
     *,
     client: Any = None,
-) -> dict[str, float]:
-    """Reads `alpha_team` tags for the given {target: (name, version)} map.
+    tag_names: Sequence[str] = ("alpha_team", "alpha_player"),
+) -> dict[str, dict[str, float]]:
+    """Reads NB dispersion tags for the given {target: (name, version)} map.
 
-    This is the simulator's cheap dispersion read path (M1/N1): it does not
-    load model artifacts. Targets whose tags are missing or unreadable fall
-    back to 0.0 (Poisson team totals).
+    This is the simulator's cheap dispersion read path (M1/N1, extended for
+    FA-108): one registry call per model version covers every requested tag,
+    no model artifacts are loaded. Targets whose tags are missing or
+    unreadable fall back to 0.0 (Poisson). Returns ``{tag: {target: alpha}}``.
     """
 
     if client is None:
@@ -356,14 +358,27 @@ def load_team_dispersion_tags(
         mlflow.set_registry_uri("databricks-uc")
         client = MlflowClient()
 
-    alphas: dict[str, float] = {}
+    alphas: dict[str, dict[str, float]] = {name: {} for name in tag_names}
     for target, (model_name, model_version) in model_versions.items():
         try:
             tags = client.get_model_version(model_name, str(model_version)).tags or {}
         except Exception:
             tags = {}
-        alphas[str(target)] = _tag_float(tags, "alpha_team")
+        for name in tag_names:
+            alphas[name][str(target)] = _tag_float(tags, name)
     return alphas
+
+
+def load_team_dispersion_tags(
+    model_versions: Mapping[str, tuple[str, str]],
+    *,
+    client: Any = None,
+) -> dict[str, float]:
+    """Reads `alpha_team` tags only; see ``load_dispersion_tags``."""
+
+    return load_dispersion_tags(
+        model_versions, client=client, tag_names=("alpha_team",)
+    )["alpha_team"]
 
 
 def ensure_player_event_predictions_table(spark, prediction_table: str) -> None:

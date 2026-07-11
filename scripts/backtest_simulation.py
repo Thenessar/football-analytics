@@ -60,6 +60,16 @@ def parse_args() -> argparse.Namespace:
             "for the anchor adoption (0.0 = anchor off, v1 behavior)."
         ),
     )
+    parser.add_argument(
+        "--player-dispersion-targets",
+        default="",
+        help=(
+            "FA-108 per-player allocation dispersion: comma-separated volume "
+            "targets (e.g. 'passes_total'). Empty = off (v1 allocation); run "
+            "the N6 re-run with and without 'passes_total' to produce the "
+            "adoption evidence for the passes coverage fix."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -89,10 +99,16 @@ def main() -> None:
         registered_model_name_prefix=args.registered_model_prefix,
         alias=args.model_alias,
     )
+    player_dispersion_targets = tuple(
+        part.strip()
+        for part in args.player_dispersion_targets.split(",")
+        if part.strip()
+    )
     config = SimulationConfig(
         n_sims=args.n_sims,
         seed=args.seed,
         team_goal_anchor_weight=args.team_goal_anchor_weight,
+        player_dispersion_targets=player_dispersion_targets,
     )
     results, skipped = simulate_completed_fixtures(feature_rows, models, config=config)
     report = score_simulation_backtest(results, feature_rows)
@@ -107,11 +123,17 @@ def main() -> None:
     run_suffix = (
         f"-w{args.team_goal_anchor_weight:g}" if args.team_goal_anchor_weight else ""
     )
+    if player_dispersion_targets:
+        run_suffix += "-pd-" + "-".join(player_dispersion_targets)
     with mlflow.start_run(run_name=f"simulation-backtest-{args.season}{run_suffix}"):
         mlflow.log_param("mode", "simulation_backtest")
         mlflow.log_param("season", args.season)
         mlflow.log_param("n_sims", args.n_sims)
         mlflow.log_param("team_goal_anchor_weight", args.team_goal_anchor_weight)
+        mlflow.log_param(
+            "player_dispersion_targets",
+            ",".join(player_dispersion_targets) or "(off)",
+        )
         mlflow.log_param("fixtures_simulated", len(results))
         mlflow.log_param("fixtures_skipped", len(skipped))
         for row in coverage.itertuples():
