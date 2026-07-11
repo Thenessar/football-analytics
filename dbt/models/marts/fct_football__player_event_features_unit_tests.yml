@@ -106,12 +106,15 @@ unit_tests:
         rows:
           - {fixture_id: 1, team_id: 1, team_elo_attack_pre: 0.25, team_elo_defense_pre: 0.125}
           - {fixture_id: 2, team_id: 1, team_elo_attack_pre: 0.25, team_elo_defense_pre: 0.125}
+      # Every row must carry the identical key set: dbt renders each row as
+      # its own SELECT and UNIONs them, so heterogeneous keys fail with
+      # NUM_COLUMNS_MISMATCH on Databricks.
       - input: ref('fct_football__player_elo_history')
         rows:
           - {fixture_id: 1, team_id: 1, player_id: 7, is_current_state: false, player_offensive_modifier_pre: 0.125, player_defensive_modifier_pre: 0.0, player_offensive_elo_pre: 0.375, player_defensive_elo_pre: 0.125, player_offensive_rating_pre: 0.375, player_defensive_rating_pre: 0.125, missed_fixture_count_pre: 0}
           - {fixture_id: 1, team_id: 1, player_id: 8, is_current_state: false, player_offensive_modifier_pre: -0.125, player_defensive_modifier_pre: 0.0, player_offensive_elo_pre: 0.125, player_defensive_elo_pre: 0.125, player_offensive_rating_pre: 0.125, player_defensive_rating_pre: 0.125, missed_fixture_count_pre: 0}
-          - {fixture_id: null, team_id: 1, player_id: 7, is_current_state: true, player_offensive_modifier_pre: 0.5, player_defensive_modifier_pre: 0.25, missed_fixture_count_pre: 0}
-          - {fixture_id: null, team_id: 1, player_id: 8, is_current_state: true, player_offensive_modifier_pre: -0.25, player_defensive_modifier_pre: 0.0, missed_fixture_count_pre: 2}
+          - {fixture_id: null, team_id: 1, player_id: 7, is_current_state: true, player_offensive_modifier_pre: 0.5, player_defensive_modifier_pre: 0.25, player_offensive_elo_pre: null, player_defensive_elo_pre: null, player_offensive_rating_pre: null, player_defensive_rating_pre: null, missed_fixture_count_pre: 0}
+          - {fixture_id: null, team_id: 1, player_id: 8, is_current_state: true, player_offensive_modifier_pre: -0.25, player_defensive_modifier_pre: 0.0, player_offensive_elo_pre: null, player_defensive_elo_pre: null, player_offensive_rating_pre: null, player_defensive_rating_pre: null, missed_fixture_count_pre: 2}
       - input: ref('fct_football__lineup_elo_strength')
         rows: []
       - input: ref('fct_football__formation_matchup_history')
@@ -122,7 +125,7 @@ unit_tests:
         rows: []
     expect:
       rows:
-        - {fixture_id: 1, player_id: 7, is_completed_fixture: true, player_offensive_modifier_pre: 0.125, player_offensive_elo_pre: 0.375, player_offensive_rating_pre: 0.375, missed_fixture_count_pre: 0}
-        - {fixture_id: 1, player_id: 8, is_completed_fixture: true, player_offensive_modifier_pre: -0.125, player_offensive_elo_pre: 0.125, player_offensive_rating_pre: 0.125, missed_fixture_count_pre: 0}
+        - {fixture_id: 1, player_id: 7, is_completed_fixture: true, player_offensive_modifier_pre: 0.125, player_offensive_elo_pre: 0.375, player_offensive_rating_pre: 0.375, player_defensive_elo_pre: 0.125, missed_fixture_count_pre: 0}
+        - {fixture_id: 1, player_id: 8, is_completed_fixture: true, player_offensive_modifier_pre: -0.125, player_offensive_elo_pre: 0.125, player_offensive_rating_pre: 0.125, player_defensive_elo_pre: 0.125, missed_fixture_count_pre: 0}
         - {fixture_id: 2, player_id: 7, is_completed_fixture: false, player_offensive_modifier_pre: 0.5, player_offensive_elo_pre: 0.75, player_offensive_rating_pre: 0.75, player_defensive_elo_pre: 0.375, missed_fixture_count_pre: 0}
         - {fixture_id: 2, player_id: 8, is_completed_fixture: false, player_offensive_modifier_pre: -0.25, player_offensive_elo_pre: 0.0, player_offensive_rating_pre: 0.0, player_defensive_elo_pre: 0.125, missed_fixture_count_pre: 2}
