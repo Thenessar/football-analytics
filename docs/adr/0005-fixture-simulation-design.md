@@ -130,6 +130,20 @@ anchored goals through their existing identities.
   bias. Extend the anchor to `shots_total` only if FA-106 shows totals bias
   there too.
 
+**Outcome (2026-07-11): w = 0 adopted — anchor off.** The FA-106 holdout
+w-sweep (1,018+ team-fixtures) showed monotone degradation of the goals
+family as w rises (goals_total PIT deviation 0.007 → 0.039, saves top-1
+allocation 0.976 → 0.810) and no improving metric: post-FA-101 the player
+models receive their opponent-Elo features at serving time, so the sum of
+player means already prices opponent strength and the Elo-only anchor
+double-counts it. Simplification 6 stands. The machinery remains available
+via `team_goal_anchor_weight` (digest-tracked); reopen only with fresh
+backtest evidence of team-total bias, and add a simulated-vs-actual team
+mean bias column to `score_simulation_backtest` when doing so. Real trigger
+hit by the same run: `passes_total` player intervals are far too narrow
+(0.581 coverage at 0.80 nominal, PIT deviation 0.189) — revisit
+simplification 3/6 for passes with per-player dispersion.
+
 ## Output
 
 `gold.sim_football__fixture_simulation` — grain `fixture_id / sim_set_id /

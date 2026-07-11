@@ -41,8 +41,8 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ✅ DONE (2026-07-10) |
 | FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ✅ DONE (2026-07-10) |
 | FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | 🟨 CODE LANDED (2026-07-11) — evidence runs pending deploy |
-| FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ⬛ BLOCKED (2026-07-11) — prod deploy needs user approval |
-| FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | 🟨 CODE LANDED (2026-07-11) — anchor OFF (w=0) until FA-106 fits w |
+| FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ✅ DONE (2026-07-11) |
+| FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | ✅ DONE (2026-07-11) — evidence says **keep w = 0**; anchor machinery retained |
 | FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | ⬛ BLOCKED (2026-07-11) — all four tasks need the deployed stack |
 
 **What to do next:** pick the highest ticket in this table whose dependencies are all ✅ DONE. Start with **FA-101 and FA-103 in parallel** (no dependencies). FA-101 requires **no retraining** — the models were trained on good features; serving just has to supply them (the +52% sweep in E-3 is recovered immediately). FA-104 raises the discrimination ceiling; FA-105 differentiates fixtures. FA-102/FA-103 make sure this class of bug can never ship silently again. When a ticket lands, flip its Status here to ✅ DONE (date) in the same commit, per Working Agreement.
@@ -151,7 +151,22 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
 - **Agent persona — "Meter":** MLOps operator comfortable driving Databricks jobs on a free-tier budget — batches SQL, watches the daily warehouse quota, and records numbers verbatim into docs. No modeling opinions; produces evidence.
 - **Entry point:** `scripts/backtest_simulation.py --season <latest completed>` (never run; quota exhausted 2026-07-07 — see ml_upgrade_backlog F-3). Measures interval coverage, PIT uniformity, team-total bias, and allocation top-1/top-3 — the pre-committed evidence for FA-105's adoption and ADR 0005's revisit triggers.
 - **Acceptance criteria:** artifact (JSON + CSV) produced; per-target coverage/PIT/team-total-bias/allocation numbers recorded here and in the ml_upgrade_backlog N6 notes; targets with 80% coverage outside [70, 90] flagged against the ADR 0005 revisit triggers.
-- **Status (2026-07-11): BLOCKED on the FA-101/FA-104 prod deploy**, which auto-mode could not authorize (`databricks bundle deploy -t prod` denied — user approval required). Runbook once deployed (see FA-104 notes step 1 for the deploy commands): on Databricks run `python scripts/backtest_simulation.py --season <latest completed>`; additionally sweep `SimulationConfig(team_goal_anchor_weight=w)` over w ∈ {0, 0.25, 0.5, 0.75, 1.0} (the backtest already feeds `expected_goals_for_pre` anchors from the feature rows post-FA-105) and record per-w team-goal bias + coverage — that table is FA-105's fitting evidence. Record all numbers here and in ml_upgrade_backlog N6 notes.
+- **Run record (2026-07-11, latest completed season, n_sims 5000, seed 7, post-FA-101/FA-104 marts, registered v7 models):** 16,586 player rows / 1,018–1,026 team-fixtures scored per target; 9 fixtures skipped (no expected-minutes rows — pre-lineup-ingestion fixtures; the crash this exposed on first real run was fixed in f502960). w-sweep over `--team-goal-anchor-weight` ∈ {0, 0.25, 0.5, 0.75, 1.0}.
+- **w-invariant results (only the goals chain responds to the anchor).** Player 80% interval coverage / PIT max deviation / team top-1 allocation at w = 0: shots_total 0.907/0.055/0.373 · shots_on 0.936/0.023/0.389 · passes_total **0.581/0.189**/0.317 · offsides 0.953/0.015/0.397 · cards_yellow 0.961/0.011/0.175 · fouls_committed 0.888/0.074/0.274 · fouls_drawn 0.891/0.064/0.311 · cards_red 0.995/0.003/0.086 (81 fixtures).
+- **Goals family vs w (coverage / PIT dev; saves & assists inherit through the identities):**
+
+  | w | goals_total | goals_saves | goals_assists | saves top1 | goals top3 (team) |
+  | --- | --- | --- | --- | --- | --- |
+  | 0.00 | 0.962 / 0.007 | 0.988 / 0.008 | 0.966 / 0.006 | 0.976 | 0.941 |
+  | 0.25 | 0.970 / 0.013 | 0.984 / 0.014 | 0.975 / 0.013 | 0.953 | 0.938 |
+  | 0.50 | 0.975 / 0.025 | 0.975 / 0.025 | 0.980 / 0.024 | 0.937 | 0.935 |
+  | 0.75 | 0.980 / 0.033 | 0.964 / 0.036 | 0.982 / 0.033 | 0.897 | 0.932 |
+  | 1.00 | 0.982 / 0.039 | 0.956 / 0.043 | 0.983 / 0.037 | 0.810 | 0.932 |
+
+- **Findings against the ADR 0005 revisit triggers:**
+  1. **passes_total is genuinely miscalibrated low** — 0.581 coverage at 0.80 nominal with PIT max deviation 0.189: per-player passes intervals are far too narrow. This is the one real trigger hit; follow-up recorded for FA-107/next backlog (candidate: per-player NB dispersion in allocation, not just team-level alpha).
+  2. The `outside_acceptance_band` flags on goals/cards/offsides are **discreteness over-coverage** (10–90% quantiles on low-mean counts), not miscalibration — their PIT deviations are ≤ 0.015 at w = 0. shots_total (0.907, PIT 0.055) and fouls (PIT 0.064–0.074) are marginal but acceptable.
+  3. Report gap noted: `score_simulation_backtest` emits team coverage + mean_actual but no simulated-vs-actual team mean bias column; add one if the anchor question is ever reopened.
 
 ### P4 / FA-105. Anchor simulation team totals to the Elo goal model (fixes E-6)
 - **Jira:** FA-105 · Story · Priority Medium-High · 5 pts · Labels `simulation`, `monte-carlo` · Depends on FA-106 (evidence).
@@ -165,6 +180,7 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   - Anchor plumbing: `SimulationInputs.expected_team_goals` (str team-id keys, mirrors `alpha_team`); notebook 05 batch-reads `fct_football__team_elo_history.expected_goals_for_pre` in one query and exposes a `team_goal_anchor_weight` widget; `simulate_completed_fixtures` reads anchors off the feature-mart rows so the FA-106 w-sweep needs no extra queries.
   - Tests: exact-anchor scaling + share preservation + other-target immutability; blend math at w=0.5; no-op identities; digest sensitivity; mismatched-vs-even fixture differentiation with means tracking the anchor (3.0/0.5 vs 1.3/1.3, favorite win-rate ≫ even) and determinism under seed with the anchor on. ADR 0005 amended (engine 1.1.0 section) with the clip-undershoot caveat and the shots_total extension condition.
   - Remaining for ✅: fit w on the FA-106 sweep, flip the notebook/job default, record before/after coverage + bias here.
+- **Fit decision (2026-07-11): w = 0 adopted — the anchor stays OFF.** The FA-106 sweep shows monotone degradation of the whole goals family as w rises (goals_total PIT deviation 0.007 → 0.039, saves top-1 allocation 0.976 → 0.810, assists PIT 0.006 → 0.037; table in FA-106 notes) and no metric improves. Post-FA-101 the player models receive their opponent-Elo features at serving, so Σ player means already prices opponent strength; blending in the Elo-only goal expectation double-counts it and mis-levels the totals. E-6's compression was a symptom of E-2 and is resolved by FA-101 — the anticipated reconciliation layer is not needed on current evidence. The engine machinery stays (digest-tracked `team_goal_anchor_weight`, defaults 0.0 everywhere) so the question can be reopened cheaply if a future backtest shows totals bias; ADR 0005 amendment updated with this outcome.
 
 ### P5 / FA-107. Re-run the data-gated follow-ups on the fixed stack, retrain + re-register
 - **Jira:** FA-107 · Story · Priority Medium · 5 pts · Labels `mlops`, `release` · Depends on FA-101, FA-102 (parity gate green), FA-104 (feature set final).
