@@ -90,6 +90,7 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   - Tests: helper-semantics test on known values incl. the no-Elo-history coalesce; **standing regression gate** `test_serving_parity_backtest_reports_zero_delta_on_consistent_features` (delta < 1e-9 on self-consistent synthetic data); an E-5 replica proving a nonzero RPS delta when the model leans on a feature serving cannot rebuild.
   - Scope note: the transform covers the player-Elo family exactly as the ticket pre-committed ("everything else identical"). The known residual serving skew in `team_lineup_attack/defense_strength` (see FA-101 notes) is deliberately NOT degraded here so the delta gate stays ≈ 0; when the lineup-strength follow-up lands in FA-104, extend the helper and keep the gate.
   - The production parity run (real-data delta table on the Databricks feature table) rides with the FA-104 backtest / FA-107 verification, same quota batch.
+  - **Production parity result (2026-07-11):** ran with the FA-104 evidence backtests on the rebuilt marts — paired training-vs-serving deltas are **exactly 0.0 for every target × metric × fold**, on both the P1-fixed baseline and the FA-104 feature set (3 folds each). The serving path reproduces the training features bit-for-bit post-FA-101; E-5 is closed and this stands as the regression gate for every future backtest.
 
 ### P2b / FA-103. `mon_football__inference_feature_health` monitor (guards the class)
 - **Jira:** FA-103 · Story · Priority High · 3 pts · Labels `dbt`, `monitoring` · Depends on nothing (start in parallel with FA-101; assertions get stricter after it lands).
@@ -127,6 +128,23 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
     3. `scripts/tune_lgbm.py` (F-4, needs the `tuning` extra) on the new feature set; commit adopted `config/lgbm_params/*.json` with the comparison table.
     4. Modifier-clip/lr evaluation (E-4): needs feature-table rebuilds with `DEFAULT_PLAYER_MODIFIER_CLIP` 2.0/2.5 variants scored via step 2 — budget a separate quota day; adopt only on backtest evidence + ADR note.
   - Follow-up carried from FA-101: `fct_football__lineup_elo_strength` current-state join (lineup strength for future fixtures still falls back to team Elo); extend `degrade_rows_to_serving_shape` in the same change and keep the parity gate.
+- **Backtest evidence (2026-07-11, L2 rolling-origin, 3 folds, serving-parity mode on both runs; baseline = P1-fixed stack with the pre-FA-104 feature list):**
+
+  | target | rank_spearman | top1_hit_rate | skill_vs_player_l5 | rps | ece_ge_1 |
+  | --- | --- | --- | --- | --- | --- |
+  | shots_total | 0.4532 → **0.4696** | 0.4343 → **0.4384** | 0.0815 → **0.0922** | 0.3240 → **0.3206** | 0.0146 → 0.0139 |
+  | shots_on | 0.3790 → **0.3887** | 0.4347 → **0.4373** | 0.1008 → **0.1094** | 0.1817 → **0.1808** | 0.0119 → 0.0103 |
+  | goals_total | 0.2936 → **0.3040** | 0.3765 → **0.3832** | 0.1198 → **0.1293** | 0.0696 → **0.0693** | 0.0056 → 0.0066 |
+  | goals_assists | 0.2228 → **0.2235** | 0.2509 → 0.2459 | 0.1246 → **0.1263** | 0.0527 → **0.0527** | 0.0040 → 0.0043 |
+  | goals_saves | 0.3908 → **0.4003** | 0.7552 → **0.7581** | 0.1203 → **0.1205** | 0.9732 → 0.9732 | 0.0251 → 0.0261 |
+  | passes_total | 0.8806 → **0.8849** | 0.4114 → **0.4170** | 0.1347 → **0.1462** | 6.1631 → **6.0538** | 0.0089 → 0.0080 |
+  | offsides | 0.3148 → **0.3233** | 0.4180 → **0.4273** | 0.0813 → **0.0916** | 0.0843 → **0.0838** | 0.0080 → 0.0082 |
+  | fouls_committed | 0.4070 → **0.4166** | 0.2602 → **0.2838** | 0.0670 → **0.0727** | 0.4353 → **0.4324** | 0.0281 → 0.0278 |
+  | fouls_drawn | 0.4570 → **0.4698** | 0.3682 → **0.3977** | 0.0532 → **0.0614** | 0.4220 → **0.4166** | 0.0261 → 0.0263 |
+  | cards_yellow | 0.1370 → **0.1435** | 0.1869 → **0.2026** | 0.0843 → **0.0859** | 0.0944 → **0.0943** | 0.0090 → 0.0097 |
+  | cards_red | −0.0285 → −0.0232 | 0.0695 → 0.0590 | 0.1215 → 0.1198 | 0.004251 → 0.004258 | 0.0002 → 0.0005 |
+
+  **Verdict: gates pass — the FA-104 feature set is adopted** (it is the default list). rank_spearman up 11/11; top1 up 9/11 (down only on cards_red/goals_assists, inside fold std); skill_vs_player_l5 up 10/11 with shots_total 0.0922 > the 0.086 reference; RPS non-worse on 10/11 (cards_red +0.2%, noise); every ECE delta ≤ 0.001 (≪ 0.02 band). Serving-parity deltas exactly 0.0 throughout (see FA-102 notes). Still pending for ✅ DONE: the M3/F-4 tuning run on this feature set (adopted `config/lgbm_params/*.json` + comparison table) and the modifier-clip/lr evaluation (runbook step 4).
 
 ### P4-pre / FA-106. Run the N6 simulation holdout backtest (F-3, evidence for FA-105)
 - **Jira:** FA-106 · Task · Priority High (unblocks FA-105) · 2 pts · Labels `databricks`, `backtest`, `data-gated` · Depends on FA-101 being deployed (otherwise it measures the broken serving path).
