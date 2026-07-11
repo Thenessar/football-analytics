@@ -220,6 +220,16 @@ def build_simulation_inputs(
         pd.MultiIndex.from_frame(players[identity_cols]), fill_value=0.0
     )
     for target in ALL_SIMULATION_TARGETS:
+        # pivot_table silently drops a column whose values are all NaN — the
+        # signature of predictions built without expected_minutes (rows
+        # predating lineup ingestion). Raise the governed input error so
+        # callers skip the fixture with a reason instead of KeyError-ing.
+        if target not in pivot.columns:
+            raise SimulationInputError(
+                f"predicted_mean is null on every '{target}' row — likely "
+                "missing expected_minutes upstream; cannot recover per-90 "
+                "intensities"
+            )
         means = pd.to_numeric(pivot[target], errors="coerce").fillna(0.0).to_numpy(dtype=float)
         players[f"rate90_{target}"] = np.clip(means, 0.0, None) / exposure
 

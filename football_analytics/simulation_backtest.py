@@ -69,6 +69,20 @@ def simulate_completed_fixtures(
                 "reason": "no confirmed starting XI in feature rows",
             })
             continue
+        # Fixtures predating lineup ingestion carry no expected-minutes rows;
+        # every predicted_mean would be NaN and the inputs unbuildable.
+        minutes_series = (
+            fixture_rows["expected_minutes"]
+            if "expected_minutes" in fixture_rows.columns
+            else pd.Series(dtype=float)
+        )
+        usable_minutes = pd.to_numeric(minutes_series, errors="coerce").notna()
+        if not usable_minutes.any():
+            skipped.append({
+                "fixture_id": int(fixture_id),
+                "reason": "no expected_minutes on any row (lineups not ingested for this fixture)",
+            })
+            continue
         prediction_set_id = deterministic_prediction_set_id(
             int(fixture_id),
             lineup_digest=lineup_signature(fixture_rows),

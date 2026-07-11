@@ -116,6 +116,14 @@ def test_inputs_validation_errors_are_specific():
     with pytest.raises(SimulationInputError, match="only 10 predicted players"):
         build_simulation_inputs(short_team)
 
+    # All-null predicted means (predictions built without expected_minutes):
+    # pivot_table drops the all-NaN columns, which must surface as the
+    # governed input error, never a raw KeyError (first-real-run regression).
+    null_means = _active_predictions()
+    null_means["predicted_mean"] = np.nan
+    with pytest.raises(SimulationInputError, match="predicted_mean is null"):
+        build_simulation_inputs(null_means)
+
 
 def test_inputs_degrade_gracefully_without_decomposition_columns():
     predictions = _active_predictions().drop(

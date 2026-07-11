@@ -156,3 +156,25 @@ def test_backtest_skips_fixtures_without_full_lineups():
     )
     assert len(results) == 1
     assert skipped["fixture_id"].tolist() == [1000]
+
+
+def test_backtest_skips_fixtures_without_expected_minutes():
+    # First-real-run regression (FA-106): fixtures predating lineup ingestion
+    # have null expected_minutes on every row; they must land in the skip log
+    # with a reason instead of crashing input construction with a KeyError.
+    import numpy as np
+
+    feature_rows = _feature_rows(n_fixtures=2)
+    feature_rows.loc[
+        feature_rows["fixture_id"] == 1000, "expected_minutes"
+    ] = np.nan
+
+    results, skipped = simulate_completed_fixtures(
+        feature_rows,
+        _models(),
+        config=SimulationConfig(n_sims=200, seed=73),
+    )
+
+    assert len(results) == 1
+    assert skipped["fixture_id"].tolist() == [1000]
+    assert "expected_minutes" in skipped["reason"].iloc[0]
