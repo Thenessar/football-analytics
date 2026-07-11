@@ -50,6 +50,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap for cheap smoke runs.",
     )
+    parser.add_argument(
+        "--team-goal-anchor-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "FA-105 Elo goal anchor blend weight; sweep this over "
+            "{0, 0.25, 0.5, 0.75, 1.0} to produce FA-106's fitting evidence "
+            "for the anchor adoption (0.0 = anchor off, v1 behavior)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -79,7 +89,11 @@ def main() -> None:
         registered_model_name_prefix=args.registered_model_prefix,
         alias=args.model_alias,
     )
-    config = SimulationConfig(n_sims=args.n_sims, seed=args.seed)
+    config = SimulationConfig(
+        n_sims=args.n_sims,
+        seed=args.seed,
+        team_goal_anchor_weight=args.team_goal_anchor_weight,
+    )
     results, skipped = simulate_completed_fixtures(feature_rows, models, config=config)
     report = score_simulation_backtest(results, feature_rows)
 
@@ -90,10 +104,14 @@ def main() -> None:
 
     if args.experiment_name:
         mlflow.set_experiment(args.experiment_name)
-    with mlflow.start_run(run_name=f"simulation-backtest-{args.season}"):
+    run_suffix = (
+        f"-w{args.team_goal_anchor_weight:g}" if args.team_goal_anchor_weight else ""
+    )
+    with mlflow.start_run(run_name=f"simulation-backtest-{args.season}{run_suffix}"):
         mlflow.log_param("mode", "simulation_backtest")
         mlflow.log_param("season", args.season)
         mlflow.log_param("n_sims", args.n_sims)
+        mlflow.log_param("team_goal_anchor_weight", args.team_goal_anchor_weight)
         mlflow.log_param("fixtures_simulated", len(results))
         mlflow.log_param("fixtures_skipped", len(skipped))
         for row in coverage.itertuples():
