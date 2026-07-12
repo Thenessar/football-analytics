@@ -45,6 +45,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | ✅ DONE (2026-07-11) — evidence says **keep w = 0**; anchor machinery retained |
 | FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | 🟨 3 of 4 done (2026-07-12) — live-fixture verification pending |
 | FA-108 | P6 — Per-player NB dispersion in sim allocation (passes coverage fix) | Croupier | FA-106 (evidence) | ✅ ADOPTED (2026-07-12) on three-arm dominance — PIT gate waived with cause, calibration trigger stays open (per-position α_player follow-up) |
+| FA-109 | P7 — Per-position-group α_player (closes the open passes PIT trigger) | Croupier | FA-108 (adopted layer) | 🟨 CODE LANDED (2026-07-12) — gated off; needs retrain (per-group tags) + N6 revalidation |
 
 **What to do next:** pick the highest ticket in this table whose dependencies are all ✅ DONE. Start with **FA-101 and FA-103 in parallel** (no dependencies). FA-101 requires **no retraining** — the models were trained on good features; serving just has to supply them (the +52% sweep in E-3 is recovered immediately). FA-104 raises the discrimination ceiling; FA-105 differentiates fixtures. FA-102/FA-103 make sure this class of bug can never ship silently again. When a ticket lands, flip its Status here to ✅ DONE (date) in the same commit, per Working Agreement.
 
@@ -234,6 +235,20 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   2. If the layer's contribution is confirmed but PIT stays > ~0.08, the residual is likely structure a single global `α_player` cannot express (role bimodality; the (1−share)² variance shave is only ~8–17% and cannot explain the gap). Candidate refinements, synthetic-gated first: share-compensated gamma variance (multiplier variance × 1/(1−share)² per player), or per-position-group `α_player` fitted in M1 style.
 - **Control arm + final decision (2026-07-12):** control (retrained models, flag off): passes coverage **0.609**, PIT **0.189** — the new passes model alone moved coverage +0.03 and PIT not at all, so **the dispersion layer owns the entire jump into the band** (+0.10 coverage, −0.05 PIT) at zero cost (all other targets byte-identical between isolated arms). Three-arm table: 0.581/0.189 → 0.609/0.189 → 0.710/0.139. **ADOPTED on dominance with the user's explicit sign-off — the PIT gate (< ~0.08) is recorded as waived, not passed.** Defaults flipped at the deployment layer only (notebook 05 widget + backtest CLI default `passes_total`; `SimulationConfig` stays engine-neutral). The ADR 0005 passes trigger REMAINS OPEN: follow-up is per-position-group `α_player` (M1-style per-group fit + version tags + sim consumption), revalidated by another N6 arm, closing the trigger only when PIT < ~0.08. Requires a `bundle deploy` to reach the production job.
 
+### P7 / FA-109. Per-position-group `α_player` (closes the ADR 0005 passes PIT trigger left open by FA-108)
+- **Jira:** FA-109 · Story · Priority Medium-High · 3 pts · Labels `simulation`, `mlops` · Depends on FA-108 (adopted layer); revalidation rides the next retrain.
+- **Problem:** with the FA-108 layer adopted, passes_total holdout PIT max deviation is **0.139** (target < ~0.08). One pooled `α_player` mis-shares dispersion across roles: it over-disperses the tight groups and under-disperses the loose ones, so the aggregate PIT stays non-uniform even when coverage looks fine.
+- **Implementation (2026-07-12, code landed — gated off):**
+  - `estimate_position_group_nb_alphas` (evaluation.py): M1-style method-of-moments fit per `position_group` on validation residuals; groups under `min_rows=200` are omitted (consumers fall back to the pooled alpha — fitting noise on thin segments would inject variance, not remove bias).
+  - Training fits per-group alphas next to the pooled ones, stores them on `ExposurePoissonLightGBMModel.alpha_player_by_position` (getattr-safe for old pickles), logs a `{target}_alpha_player_by_position` param, and the register loop writes `alpha_player_g/d/m/f` version tags beside `alpha_player`/`alpha_team`.
+  - Read path mirrors FA-108: `load_dispersion_tags` returns an extra `alpha_player_by_position` map ({target: {group: alpha}}); `LoadedEventModel` carries it; `simulate_completed_fixtures` and notebook 05 plumb it into `SimulationInputs.alpha_player_by_position`.
+  - Engine: `SimulationConfig.player_dispersion_by_position` (default **False**, digest-tracked; engine 1.3.0). When on, `_resolve_player_dispersion` gives each player his group's alpha (pooled fallback for missing/unknown groups) and `sample_dispersed_allocation_weights` accepts a per-player alpha vector — zero-alpha rows keep multiplier exactly 1; the scalar path stays draw-stream-identical to FA-108.
+  - Synthetic gate (tests): in a role-heterogeneous NB world (D α=0.01, F α=1.2) the pooled arm reproduces the real holdout signature (PIT deviation 0.141 vs the measured 0.139) while the per-position arm restores calibration (PIT 0.064, coverage 0.92); plus per-group fitter recovery/thin-group fallback, per-player-vector weight moments, bit-identical gating, determinism, and digest tests.
+- **Acceptance criteria (remaining for ✅ DONE — user-run on Databricks):**
+  1. Retrain + re-register (any `train_poisson_lgbm.py --registered-model-prefix ...` run post-FA-109) so versions carry the `alpha_player_g/d/m/f` tags — the current versions predate the per-group fit and fall back to pooled.
+  2. N6 revalidation: `backtest_simulation.py --season <latest> --player-dispersion-by-position` (defaults already include `passes_total`) vs the pooled arm (2026-07-12 treatment run is the standing baseline: coverage 0.710, PIT 0.139).
+  3. Adopt if passes PIT max deviation lands **< ~0.08** with coverage still in [0.70, 0.90] and nothing else degraded: flip the notebook 05 `player_dispersion_by_position` widget default to `"true"`, record numbers here, and **close the ADR 0005 passes trigger**. If PIT stays above, record and stop — the next hypothesis (game-state/tempo structure) needs its own evidence, not another dispersion knob.
+
 ---
 
 ## Dependency graph (Jira ids)
@@ -243,6 +258,7 @@ FA-101 (P1, no deps) ──→ FA-102 (P2a, parity delta ≈ 0 gate) ──→ F
 FA-101 ────────────────→ FA-104
 FA-101 deployed ───────→ FA-106 (P4-pre, F-3 run) ──→ FA-105 (P4)
 FA-106 ────────────────→ FA-108 (P6, passes dispersion; validation rides the FA-107 quota batch)
+FA-108 ────────────────→ FA-109 (P7, per-position α_player; revalidation rides the next retrain)
 FA-103 (P2b) — no deps, start in parallel with FA-101
 FA-105 and FA-102/FA-104 are independent branches
 ```

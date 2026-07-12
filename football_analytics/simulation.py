@@ -24,7 +24,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-SIMULATION_ENGINE_VERSION = "1.2.0"
+SIMULATION_ENGINE_VERSION = "1.3.0"
 SIMULATION_TABLE_NAME = "sim_football__fixture_simulation"
 
 # All 11 targets the simulator emits, grouped by sampling treatment.
@@ -68,9 +68,16 @@ class SimulationConfig:
     # FA-108: volume targets whose allocation weights get per-player NB
     # dispersion (gamma multipliers with the model's alpha_player) — fixes
     # the too-narrow passes_total player intervals found by the FA-106
-    # holdout run. Empty = v1 allocation; keep it empty until the N6 re-run
-    # validates the coverage on real data.
+    # holdout run. "passes_total" adopted 2026-07-12 at the deployment layer
+    # (notebook 05 widget / backtest CLI); the engine default stays empty.
     player_dispersion_targets: Tuple[str, ...] = ()
+    # FA-109: refine the dispersion per position group — each player's gamma
+    # multiplier uses his group's alpha (alpha_player_g/d/m/f version tags)
+    # with the pooled alpha_player as fallback. Only affects targets already
+    # in player_dispersion_targets. Keep False until the N6 re-run on
+    # per-group-tagged model versions lands PIT under ~0.08 (ADR 0005
+    # trigger).
+    player_dispersion_by_position: bool = False
 
     def digest(self) -> str:
         payload = {
@@ -86,6 +93,7 @@ class SimulationConfig:
             "player_dispersion_targets": sorted(
                 str(target) for target in self.player_dispersion_targets
             ),
+            "player_dispersion_by_position": bool(self.player_dispersion_by_position),
             "engine_version": SIMULATION_ENGINE_VERSION,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -111,6 +119,10 @@ class SimulationInputs:
     # alpha_team); consumed by the FA-108 allocation dispersion layer for
     # the targets listed in SimulationConfig.player_dispersion_targets.
     alpha_player: Dict[str, float] = field(default_factory=dict)
+    # FA-109 per-position refinement: {target: {group_code: alpha}}; each
+    # player resolves his group's alpha with the pooled alpha_player as
+    # fallback. Only consulted when config.player_dispersion_by_position.
+    alpha_player_by_position: Dict[str, Dict[str, float]] = field(default_factory=dict)
     # Elo-layer expected team goals per team_id (stringified key, matching
     # alpha_team's convention); consumed by the FA-105 totals anchor.
     expected_team_goals: Dict[str, float] = field(default_factory=dict)
@@ -144,6 +156,7 @@ def build_simulation_inputs(
     *,
     alpha_team: Optional[Mapping[str, float]] = None,
     alpha_player: Optional[Mapping[str, float]] = None,
+    alpha_player_by_position: Optional[Mapping[str, Mapping[str, float]]] = None,
     expected_team_goals: Optional[Mapping[Any, float]] = None,
 ) -> SimulationInputs:
     """Pivots one fixture's active prediction set into simulation inputs.
@@ -260,6 +273,13 @@ def build_simulation_inputs(
         alpha_player={
             str(k): max(0.0, float(v)) for k, v in dict(alpha_player or {}).items()
         },
+        alpha_player_by_position={
+            str(target): {
+                str(group).upper(): max(0.0, float(alpha))
+                for group, alpha in dict(group_alphas or {}).items()
+            }
+            for target, group_alphas in dict(alpha_player_by_position or {}).items()
+        },
         expected_team_goals={
             str(int(k)): float(v)
             for k, v in dict(expected_team_goals or {}).items()
@@ -315,7 +335,7 @@ def sample_nb_totals(
 def sample_dispersed_allocation_weights(
     rng: np.random.Generator,
     weights: np.ndarray,
-    alpha: float = 0.0,
+    alpha: "float | np.ndarray" = 0.0,
 ) -> np.ndarray:
     """Gamma-perturbed allocation weights for player-level NB dispersion (FA-108).
 
@@ -328,12 +348,35 @@ def sample_dispersed_allocation_weights(
     team-total draw are untouched. With ``alpha <= 0`` the weights come back
     unchanged and **no randomness is consumed** — the exact bit-identical
     no-op the ``player_dispersion_targets`` config gate relies on.
+
+    ``alpha`` may also be a per-player vector of length ``weights.shape[0]``
+    (FA-109 per-position dispersions): each row gets its own gamma variance;
+    rows with ``alpha <= 0`` keep multiplier 1 exactly. The scalar path is
+    draw-stream-identical to the FA-108 engine.
     """
 
-    if not alpha or alpha <= 0.0:
+    if np.ndim(alpha) == 0:
+        if not alpha or alpha <= 0.0:
+            return weights
+        weights = np.clip(np.asarray(weights, dtype=float), 0.0, None)
+        return weights * rng.gamma(1.0 / alpha, alpha, size=weights.shape)
+
+    alphas = np.clip(np.asarray(alpha, dtype=float), 0.0, None)
+    if alphas.shape[0] != np.asarray(weights).shape[0]:
+        raise ValueError(
+            "Per-player alpha vector length must match the player axis: "
+            f"{alphas.shape[0]} != {np.asarray(weights).shape[0]}"
+        )
+    if not np.any(alphas > 0.0):
         return weights
     weights = np.clip(np.asarray(weights, dtype=float), 0.0, None)
-    return weights * rng.gamma(1.0 / alpha, alpha, size=weights.shape)
+    # Zero-alpha rows still consume draws (a fixed-shape stream keeps the
+    # vectorized call simple); their multipliers are pinned to exactly 1, so
+    # they contribute no extra variance. Determinism under seed holds because
+    # the stream shape depends only on the (digest-tracked) config and inputs.
+    safe = np.where(alphas > 0.0, alphas, 1.0)[:, None]
+    multipliers = rng.gamma(1.0 / safe, safe, size=weights.shape)
+    return weights * np.where((alphas > 0.0)[:, None], multipliers, 1.0)
 
 
 def multinomial_allocate(
@@ -475,6 +518,33 @@ def apply_team_goal_anchor(
     )
 
 
+def _resolve_player_dispersion(
+    inputs: SimulationInputs,
+    config: SimulationConfig,
+    target: str,
+) -> "float | np.ndarray":
+    """Player dispersion for one target: pooled scalar or per-player vector.
+
+    With ``config.player_dispersion_by_position`` and fitted per-group alphas
+    (FA-109), each player resolves his position group's alpha, falling back
+    to the pooled ``alpha_player`` for missing/unknown groups. Otherwise the
+    pooled scalar is returned — the exact FA-108 path.
+    """
+
+    pooled = inputs.alpha_player.get(target, 0.0)
+    if not config.player_dispersion_by_position:
+        return pooled
+    by_group = inputs.alpha_player_by_position.get(target)
+    if not by_group or "position_group" not in inputs.players.columns:
+        return pooled
+    return np.array([
+        max(0.0, float(by_group.get(str(group).upper(), pooled)))
+        if pd.notna(group)
+        else pooled
+        for group in inputs.players["position_group"]
+    ])
+
+
 def simulate_fixture(
     inputs: SimulationInputs,
     config: Optional[SimulationConfig] = None,
@@ -516,7 +586,7 @@ def simulate_fixture(
     for target in ("shots_total", "passes_total", "offsides", "cards_yellow"):
         alpha = inputs.alpha_team.get(target, 0.0)
         alpha_player = (
-            inputs.alpha_player.get(target, 0.0)
+            _resolve_player_dispersion(inputs, cfg, target)
             if target in cfg.player_dispersion_targets
             else 0.0
         )

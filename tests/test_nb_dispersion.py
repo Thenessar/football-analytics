@@ -8,6 +8,7 @@ import pytest
 
 from football_analytics.evaluation import (
     estimate_nb_alpha,
+    estimate_position_group_nb_alphas,
     estimate_team_total_nb_alpha,
 )
 from football_analytics.ml_training import count_threshold_probabilities
@@ -56,6 +57,55 @@ def test_team_total_alpha_fits_on_group_sums():
     assert alpha_team > alpha_player
     # Gamma(shape=2) mixing implies alpha = 1/shape = 0.5 at the total level.
     assert alpha_team == pytest.approx(0.5, rel=0.25)
+
+
+def test_position_group_alphas_recover_heterogeneous_dispersions():
+    # FA-109: GK and outfield passes variance differ structurally; the
+    # per-group fit must recover each group's alpha while the pooled fit
+    # lands somewhere in between.
+    rng = np.random.default_rng(31)
+    n_per_group = 20000
+    groups, mus, ys = [], [], []
+    for group, alpha_true in (("D", 0.05), ("F", 0.6)):
+        mu = rng.uniform(1.0, 5.0, size=n_per_group)
+        r = 1.0 / alpha_true
+        y = rng.negative_binomial(r, r / (r + mu))
+        groups.extend([group] * n_per_group)
+        mus.append(mu)
+        ys.append(y)
+    frame = pd.DataFrame({"position_group": groups})
+    mu_all = np.concatenate(mus)
+    y_all = np.concatenate(ys)
+
+    alphas = estimate_position_group_nb_alphas(frame, y_true=y_all, mu=mu_all)
+
+    assert alphas["D"] == pytest.approx(0.05, abs=0.03)
+    assert alphas["F"] == pytest.approx(0.6, rel=0.15)
+    pooled = estimate_nb_alpha(y_all, mu_all)
+    assert alphas["D"] < pooled < alphas["F"]
+
+
+def test_position_group_alphas_skip_thin_groups_and_missing_column():
+    rng = np.random.default_rng(32)
+    mu = rng.uniform(1.0, 3.0, size=500)
+    y = rng.poisson(mu)
+    frame = pd.DataFrame({
+        # 450 defenders, 50 goalkeepers (below min_rows), some nulls
+        "position_group": ["D"] * 450 + ["G"] * 40 + [None] * 10,
+    })
+
+    alphas = estimate_position_group_nb_alphas(
+        frame, y_true=y, mu=mu, min_rows=200
+    )
+    assert "D" in alphas
+    assert "G" not in alphas  # thin group omitted -> pooled fallback
+
+    assert estimate_position_group_nb_alphas(
+        frame.drop(columns=["position_group"]), y_true=y, mu=mu
+    ) == {}
+    assert estimate_position_group_nb_alphas(
+        frame.iloc[0:0], y_true=[], mu=[]
+    ) == {}
 
 
 def test_threshold_probabilities_alpha_zero_is_bit_identical_poisson():

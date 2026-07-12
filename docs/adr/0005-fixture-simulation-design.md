@@ -210,6 +210,15 @@ when PIT lands under ~0.08. Defaults flipped at the deployment layer
 (notebook 05 widget, backtest CLI); `SimulationConfig` stays engine-neutral
 with `player_dispersion_targets = ()`.
 
+**Follow-up landed (2026-07-12, engine 1.3.0, FA-109 — gated off):**
+per-position-group `α_player` (`alpha_player_g/d/m/f` version tags, pooled
+fallback, `player_dispersion_by_position` config gate, digest-tracked). In
+a synthetic role-heterogeneous world that reproduces the holdout signature
+(pooled-arm PIT 0.141 vs the measured 0.139), the per-position arm restores
+PIT to 0.064. Real-data adoption needs versions registered post-FA-109
+(per-group tags) plus an N6 revalidation run; the trigger closes only when
+the holdout PIT lands under ~0.08.
+
 ## Output
 
 `gold.sim_football__fixture_simulation` — grain `fixture_id / sim_set_id /

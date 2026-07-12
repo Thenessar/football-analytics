@@ -161,6 +161,40 @@ def estimate_nb_alpha(y_true: Iterable[float], mu: Iterable[float]) -> float:
     return max(0.0, numerator / denominator)
 
 
+def estimate_position_group_nb_alphas(
+    frame: pd.DataFrame,
+    *,
+    y_true: Iterable[float],
+    mu: Iterable[float],
+    group_col: str = "position_group",
+    min_rows: int = 200,
+) -> Dict[str, float]:
+    """Per-position-group NB dispersions (FA-109): one M1-style fit per group.
+
+    A single pooled ``alpha_player`` blends heterogeneous roles (a GK's and a
+    midfielder's passes variance differ structurally), which leaves residual
+    PIT miscalibration even after the FA-108 allocation dispersion. Groups
+    with fewer than ``min_rows`` validation rows are omitted — fitting noise
+    on tiny segments would inject variance, not remove bias — and consumers
+    fall back to the pooled alpha for missing groups.
+    """
+
+    if group_col not in frame.columns or len(frame) == 0:
+        return {}
+    y = _as_float_array(y_true)
+    mu_arr = _as_float_array(mu)
+    groups = frame[group_col].fillna("").astype(str).str.upper().to_numpy()
+    alphas: Dict[str, float] = {}
+    for group in sorted(set(groups)):
+        if not group:
+            continue
+        mask = groups == group
+        if int(mask.sum()) < min_rows:
+            continue
+        alphas[group] = estimate_nb_alpha(y[mask], mu_arr[mask])
+    return alphas
+
+
 def estimate_team_total_nb_alpha(
     frame: pd.DataFrame,
     *,

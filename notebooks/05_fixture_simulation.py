@@ -38,6 +38,10 @@ dbutils.widgets.text("team_goal_anchor_weight", "0.0")
 # (coverage 0.609 -> 0.710 at 0.80 nominal, PIT 0.189 -> 0.139, zero cost
 # elsewhere). Set to "" to reproduce the v1 allocation.
 dbutils.widgets.text("player_dispersion_targets", "passes_total")
+# FA-109 per-position-group dispersion refinement (alpha_player_g/d/m/f
+# version tags, pooled fallback). "false" until the N6 revalidation on
+# per-group-tagged model versions lands PIT under ~0.08 (ADR 0005 trigger).
+dbutils.widgets.text("player_dispersion_by_position", "false")
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
@@ -63,6 +67,10 @@ player_dispersion_targets = tuple(
     part.strip()
     for part in dbutils.widgets.get("player_dispersion_targets").split(",")
     if part.strip()
+)
+player_dispersion_by_position = (
+    dbutils.widgets.get("player_dispersion_by_position").strip().lower()
+    in ("true", "1", "yes")
 )
 run_id = dbutils.widgets.get("run_id").strip() or f"simulation-{utc_now_iso()}"
 logger = configure_json_logging(level=logging.INFO, logger_name="football_analytics.fixture_simulation")
@@ -94,6 +102,7 @@ sim_config = SimulationConfig(
     seed=seed,
     team_goal_anchor_weight=team_goal_anchor_weight,
     player_dispersion_targets=player_dispersion_targets,
+    player_dispersion_by_position=player_dispersion_by_position,
 )
 results = []
 if active_predictions.empty:
@@ -126,6 +135,9 @@ else:
                 dispersion_tags = load_dispersion_tags(model_versions)
                 alpha_team = dispersion_tags["alpha_team"]
                 alpha_player = dispersion_tags["alpha_player"]
+                alpha_player_by_position = dispersion_tags.get(
+                    "alpha_player_by_position", {}
+                )
             except Exception as exc:
                 logger.warning(
                     "dispersion_tags_unavailable",
@@ -133,6 +145,7 @@ else:
                 )
                 alpha_team = {}
                 alpha_player = {}
+                alpha_player_by_position = {}
 
             fixture_anchors = {
                 int(row.team_id): float(row.expected_goals_for_pre)
@@ -145,6 +158,7 @@ else:
                 fixture_rows,
                 alpha_team=alpha_team,
                 alpha_player=alpha_player,
+                alpha_player_by_position=alpha_player_by_position,
                 expected_team_goals=fixture_anchors,
             )
             sim_set_id = deterministic_sim_set_id(

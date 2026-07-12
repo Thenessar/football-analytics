@@ -25,6 +25,7 @@ import pandas as pd
 from football_analytics.evaluation import (  # noqa: F401
     dispersion_index,
     estimate_nb_alpha,
+    estimate_position_group_nb_alphas,
     estimate_team_total_nb_alpha,
     poisson_log_loss,
     ranked_probability_score,
@@ -276,6 +277,10 @@ class ExposurePoissonLightGBMModel:
 
     ``alpha_player``/``alpha_team`` are the M1 negative-binomial dispersions
     (player rows / team totals); 0.0 means Poisson.
+    ``alpha_player_by_position`` (FA-109) refines the player dispersion per
+    position group ({'G': ..., 'D': ...}); consumers fall back to the pooled
+    ``alpha_player`` for missing groups. Older pickled models lack the
+    attribute — read it with ``getattr(..., {})``.
     """
 
     booster: Any
@@ -285,6 +290,7 @@ class ExposurePoissonLightGBMModel:
     goalkeeper_only: bool = False
     alpha_player: float = 0.0
     alpha_team: float = 0.0
+    alpha_player_by_position: Dict[str, float] = field(default_factory=dict)
 
     def predict_mean(self, frame: pd.DataFrame, exposure: Optional[Iterable[float]] = None) -> np.ndarray:
         X = frame[self.feature_columns]
@@ -761,8 +767,22 @@ def train_poisson_lightgbm_with_mlflow(
                 alpha_team = estimate_team_total_nb_alpha(
                     target_valid_df, y_true=y_valid, mu=valid_mu
                 )
+                # FA-109: per-position-group player dispersion for the
+                # simulator's allocation layer; pooled alpha stays the
+                # fallback for thin groups.
+                alpha_player_by_position = estimate_position_group_nb_alphas(
+                    target_valid_df, y_true=y_valid, mu=valid_mu
+                )
                 mlflow.log_param(f"{target}_alpha_player", round(alpha_player, 6))
                 mlflow.log_param(f"{target}_alpha_team", round(alpha_team, 6))
+                if alpha_player_by_position:
+                    mlflow.log_param(
+                        f"{target}_alpha_player_by_position",
+                        json.dumps(
+                            {k: round(v, 6) for k, v in alpha_player_by_position.items()},
+                            sort_keys=True,
+                        ),
+                    )
 
                 model = ExposurePoissonLightGBMModel(
                     booster=booster,
@@ -772,6 +792,7 @@ def train_poisson_lightgbm_with_mlflow(
                     goalkeeper_only=target in GOALKEEPER_ONLY_TARGETS,
                     alpha_player=alpha_player,
                     alpha_team=alpha_team,
+                    alpha_player_by_position=alpha_player_by_position,
                 )
 
                 for metric_name, metric_value in train_metrics.items():
@@ -876,6 +897,7 @@ def train_poisson_lightgbm_with_mlflow(
                         "signature": signature,
                         "alpha_player": alpha_player,
                         "alpha_team": alpha_team,
+                        "alpha_player_by_position": alpha_player_by_position,
                     })
                 trained["models"][target] = model
                 trained["metrics"][target] = {
@@ -919,6 +941,16 @@ def train_poisson_lightgbm_with_mlflow(
                     str(registered_version),
                     tag_name,
                     str(round(entry[tag_name], 6)),
+                )
+            # FA-109: per-position-group player dispersion travels the same
+            # way (alpha_player_g/d/m/f); absent groups fall back to the
+            # pooled alpha_player at read time.
+            for group, group_alpha in entry.get("alpha_player_by_position", {}).items():
+                client.set_model_version_tag(
+                    entry["registered_model_name"],
+                    str(registered_version),
+                    f"alpha_player_{str(group).lower()}",
+                    str(round(float(group_alpha), 6)),
                 )
         trained["registered_models"][entry["target"]] = entry["registered_model_name"]
 

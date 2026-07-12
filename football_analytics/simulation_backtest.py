@@ -59,6 +59,12 @@ def simulate_completed_fixtures(
     cfg = config or SimulationConfig()
     alpha_team = {model.target_event: float(model.alpha_team) for model in models}
     alpha_player = {model.target_event: float(model.alpha_player) for model in models}
+    # FA-109 per-group refinement; empty on versions predating the fit
+    # (getattr: models may be loaded from older pickled artifacts).
+    alpha_player_by_position = {
+        model.target_event: dict(getattr(model, "alpha_player_by_position", {}) or {})
+        for model in models
+    }
     model_versions = {model.target_event: model.model_version for model in models}
 
     results: List[SimulationResult] = []
@@ -112,6 +118,7 @@ def simulate_completed_fixtures(
                 predictions,
                 alpha_team=alpha_team,
                 alpha_player=alpha_player,
+                alpha_player_by_position=alpha_player_by_position,
                 expected_team_goals=expected_team_goals,
             )
         except SimulationInputError as error:

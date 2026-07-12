@@ -70,6 +70,17 @@ def parse_args() -> argparse.Namespace:
             "the v1 allocation."
         ),
     )
+    parser.add_argument(
+        "--player-dispersion-by-position",
+        action="store_true",
+        help=(
+            "FA-109: resolve each player's allocation dispersion from his "
+            "position group's alpha (alpha_player_g/d/m/f version tags; "
+            "pooled alpha_player fallback). Requires model versions "
+            "registered after the per-group fit landed. Off = FA-108 pooled "
+            "behavior; this run is the ADR 0005 passes-trigger revalidation."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -109,6 +120,7 @@ def main() -> None:
         seed=args.seed,
         team_goal_anchor_weight=args.team_goal_anchor_weight,
         player_dispersion_targets=player_dispersion_targets,
+        player_dispersion_by_position=args.player_dispersion_by_position,
     )
     results, skipped = simulate_completed_fixtures(feature_rows, models, config=config)
     report = score_simulation_backtest(results, feature_rows)
@@ -125,6 +137,8 @@ def main() -> None:
     )
     if player_dispersion_targets:
         run_suffix += "-pd-" + "-".join(player_dispersion_targets)
+    if args.player_dispersion_by_position:
+        run_suffix += "-bypos"
     with mlflow.start_run(run_name=f"simulation-backtest-{args.season}{run_suffix}"):
         mlflow.log_param("mode", "simulation_backtest")
         mlflow.log_param("season", args.season)
@@ -133,6 +147,9 @@ def main() -> None:
         mlflow.log_param(
             "player_dispersion_targets",
             ",".join(player_dispersion_targets) or "(off)",
+        )
+        mlflow.log_param(
+            "player_dispersion_by_position", args.player_dispersion_by_position
         )
         mlflow.log_param("fixtures_simulated", len(results))
         mlflow.log_param("fixtures_skipped", len(skipped))

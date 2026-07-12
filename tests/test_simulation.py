@@ -320,6 +320,133 @@ def test_player_dispersion_adds_nb_variance_without_moving_means_or_totals():
         assert dispersed_totals.var() == pytest.approx(base_totals.var(), rel=0.06)
 
 
+def test_inputs_normalize_position_group_alphas():
+    inputs = build_simulation_inputs(
+        _active_predictions(),
+        alpha_player={"passes_total": 0.3},
+        alpha_player_by_position={"passes_total": {"g": -0.5, "d": 0.2, "M": 0.6}},
+    )
+    assert inputs.alpha_player_by_position == {
+        "passes_total": {"G": 0.0, "D": 0.2, "M": 0.6}
+    }
+    assert build_simulation_inputs(_active_predictions()).alpha_player_by_position == {}
+
+
+def test_dispersed_weights_accept_per_player_alpha_vector():
+    rng = np.random.default_rng(53)
+    weights = np.tile(np.array([[4.0], [2.0], [3.0]]), (1, 100_000))
+    alphas = np.array([0.5, 0.0, 0.1])
+
+    dispersed = sample_dispersed_allocation_weights(rng, weights, alphas)
+
+    # Row means preserved; row variances follow each player's own alpha.
+    assert dispersed[0].mean() == pytest.approx(4.0, rel=0.02)
+    assert dispersed[0].var() == pytest.approx(0.5 * 16.0, rel=0.05)
+    assert dispersed[2].var() == pytest.approx(0.1 * 9.0, rel=0.05)
+    # Zero-alpha rows keep their weights exactly (multiplier pinned to 1).
+    assert (dispersed[1] == 2.0).all()
+
+    # All-zero vector is the exact no-op; mismatched length is a hard error.
+    assert sample_dispersed_allocation_weights(
+        rng, weights, np.zeros(3)
+    ) is weights
+    with pytest.raises(ValueError, match="alpha vector length"):
+        sample_dispersed_allocation_weights(rng, weights, np.array([0.1, 0.2]))
+
+
+def test_position_dispersion_is_gated_deterministic_and_digest_tracked():
+    # FA-109: the per-position refinement only acts when BOTH the target is
+    # dispersed and the by-position flag is on; without fitted group alphas
+    # it falls back to the pooled scalar bit-for-bit.
+    predictions = _active_predictions()
+    pooled_inputs = build_simulation_inputs(
+        predictions, alpha_player={"passes_total": 0.3}
+    )
+    by_position_inputs = build_simulation_inputs(
+        predictions,
+        alpha_player={"passes_total": 0.3},
+        alpha_player_by_position={"passes_total": {"G": 0.0, "M": 0.7}},
+    )
+    pooled_config = SimulationConfig(
+        n_sims=400, seed=11, player_dispersion_targets=("passes_total",)
+    )
+    by_position_config = SimulationConfig(
+        n_sims=400,
+        seed=11,
+        player_dispersion_targets=("passes_total",),
+        player_dispersion_by_position=True,
+    )
+
+    pooled = simulate_fixture(pooled_inputs, pooled_config)
+
+    # Flag off: by-position data on the inputs changes nothing, bitwise.
+    gated = simulate_fixture(by_position_inputs, pooled_config)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(gated.counts[target], pooled.counts[target])
+
+    # Flag on without fitted group alphas: pooled fallback, bit-identical.
+    fallback = simulate_fixture(pooled_inputs, by_position_config)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(fallback.counts[target], pooled.counts[target])
+
+    # Flag on with fitted group alphas: passes draws change; deterministic.
+    first = simulate_fixture(by_position_inputs, by_position_config)
+    second = simulate_fixture(by_position_inputs, by_position_config)
+    for target in ALL_SIMULATION_TARGETS:
+        np.testing.assert_array_equal(first.counts[target], second.counts[target])
+    assert (first.counts["passes_total"] != pooled.counts["passes_total"]).any()
+
+    # Digest-tracked so by-position sim sets supersede pooled ones.
+    assert by_position_config.digest() != pooled_config.digest()
+
+
+def test_position_dispersion_applies_group_alphas_per_player():
+    # Outfielders ("M", alpha 0.5) must gain far more passes variance than
+    # under the pooled alpha (0.05), while means stay put — the group alpha
+    # really lands on the right players.
+    predictions = _active_predictions()
+    mu = 40.0  # rate90 40 x 90 minutes
+    pooled_inputs = build_simulation_inputs(
+        predictions, alpha_player={"passes_total": 0.05}
+    )
+    by_position_inputs = build_simulation_inputs(
+        predictions,
+        alpha_player={"passes_total": 0.05},
+        alpha_player_by_position={"passes_total": {"M": 0.5, "G": 0.05}},
+    )
+    pooled = simulate_fixture(
+        pooled_inputs,
+        SimulationConfig(
+            n_sims=30000, seed=31, player_dispersion_targets=("passes_total",)
+        ),
+    )
+    by_position = simulate_fixture(
+        by_position_inputs,
+        SimulationConfig(
+            n_sims=30000,
+            seed=31,
+            player_dispersion_targets=("passes_total",),
+            player_dispersion_by_position=True,
+        ),
+    )
+
+    mask = (
+        by_position.inputs.players["is_starting"]
+        & (by_position.inputs.players["position_group"] == "M")
+    ).to_numpy()
+
+    pooled_means = pooled.counts["passes_total"][mask].mean(axis=1)
+    by_position_means = by_position.counts["passes_total"][mask].mean(axis=1)
+    assert by_position_means == pytest.approx(pooled_means, rel=0.03)
+
+    pooled_var = float(pooled.counts["passes_total"][mask].var(axis=1).mean())
+    by_position_var = float(
+        by_position.counts["passes_total"][mask].var(axis=1).mean()
+    )
+    assert pooled_var < 0.35 * (mu + 0.5 * mu**2)
+    assert 0.80 * (mu + 0.5 * mu**2) < by_position_var < 1.05 * (mu + 0.5 * mu**2)
+
+
 @pytest.mark.parametrize(
     "dispersion_targets",
     [(), ("passes_total", "shots_total")],

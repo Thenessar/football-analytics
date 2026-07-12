@@ -30,7 +30,11 @@ class SignalBooster:
         return np.log(np.clip(X[self.column].to_numpy(dtype=float), 1e-6, None))
 
 
-def _models(passes_alpha_player=0.0, passes_alpha_team=0.0):
+def _models(
+    passes_alpha_player=0.0,
+    passes_alpha_team=0.0,
+    passes_alpha_by_position=None,
+):
     return [
         LoadedEventModel(
             target_event=target,
@@ -41,17 +45,32 @@ def _models(passes_alpha_player=0.0, passes_alpha_team=0.0):
             goalkeeper_only=(target == "goals_saves"),
             alpha_player=passes_alpha_player if target == "passes_total" else 0.0,
             alpha_team=passes_alpha_team if target == "passes_total" else 0.0,
+            alpha_player_by_position=(
+                dict(passes_alpha_by_position)
+                if passes_alpha_by_position and target == "passes_total"
+                else {}
+            ),
         )
         for target in ALL_SIMULATION_TARGETS
     ]
 
 
-def _feature_rows(n_fixtures=20, seed=61, passes_dispersion=0.0):
+def _feature_rows(
+    n_fixtures=20,
+    seed=61,
+    passes_dispersion=0.0,
+    passes_dispersion_by_group=None,
+):
     """Completed fixtures whose labels follow the models' rates exactly.
 
     ``passes_dispersion > 0`` switches passes labels from Poisson(rate) to
     NB(rate, alpha) via the Poisson–Gamma mixture — the player-heterogeneous
     world the FA-108 dispersion layer must recover.
+    ``passes_dispersion_by_group`` ({group: alpha}, FA-109) draws each
+    player's passes label with his position group's alpha instead — the
+    role-heterogeneous world a single pooled alpha cannot calibrate.
+    Outfield slots split into defenders (slots 1-5, 'D') and forwards
+    (slots 6-10, 'F'); slot 0 is the goalkeeper ('G').
     """
 
     rng = np.random.default_rng(seed)
@@ -64,6 +83,7 @@ def _feature_rows(n_fixtures=20, seed=61, passes_dispersion=0.0):
             for slot in range(11):
                 player_id += 1
                 is_goalkeeper = slot == 0
+                position_group = "G" if is_goalkeeper else ("D" if slot <= 5 else "F")
                 shots = 0.0 if is_goalkeeper else float(rng.uniform(0.5, 3.0))
                 team_shot_rates.append(shots)
                 rates = {
@@ -84,10 +104,15 @@ def _feature_rows(n_fixtures=20, seed=61, passes_dispersion=0.0):
                     for target, rate in rates.items()
                     if target not in ("cards_red", "goals_saves")
                 }
-                if passes_dispersion > 0.0:
+                label_alpha = passes_dispersion
+                if passes_dispersion_by_group:
+                    label_alpha = float(
+                        passes_dispersion_by_group.get(position_group, 0.0)
+                    )
+                if label_alpha > 0.0:
                     labels["passes_total"] = float(rng.poisson(
                         rates["passes_total"]
-                        * rng.gamma(1.0 / passes_dispersion, passes_dispersion)
+                        * rng.gamma(1.0 / label_alpha, label_alpha)
                     ))
                 labels["cards_red"] = float(rng.random() < rates["cards_red"])
                 # GK saves label drawn from the identity-consistent marginal:
@@ -101,7 +126,7 @@ def _feature_rows(n_fixtures=20, seed=61, passes_dispersion=0.0):
                     "team_id": team_id,
                     "player_id": player_id,
                     "player_name": f"Player {player_id}",
-                    "position_group": "G" if is_goalkeeper else "M",
+                    "position_group": position_group,
                     "is_goalkeeper": is_goalkeeper,
                     "is_starting": True,
                     "expected_minutes": 90.0,
@@ -200,6 +225,65 @@ def test_player_dispersion_layer_restores_passes_calibration_in_an_nb_world():
     # draw with the measured alpha_team is untouched by the allocation layer.
     team_on = on_report["team_coverage"].set_index("target_event")
     assert team_on.loc["passes_total", "coverage"] >= 0.65
+
+
+def test_position_group_dispersion_beats_pooled_alpha_in_a_role_heterogeneous_world():
+    # FA-109: when defenders' and forwards' passes variance differ
+    # structurally (as the real N6 residual suggests), one pooled alpha
+    # over-disperses the tight group and under-disperses the loose one —
+    # coverage can look fine while the PIT stays visibly non-uniform. The
+    # per-position refinement must restore uniformity.
+    # This contrast reproduces the real N6 signature almost exactly: the
+    # pooled arm lands at PIT deviation ~0.14 (holdout measured 0.139).
+    alpha_by_group = {"D": 0.01, "F": 1.2, "G": 0.01}
+    pooled_alpha = 0.5
+    feature_rows = _feature_rows(
+        seed=83, passes_dispersion_by_group=alpha_by_group
+    )
+    models = _models(
+        passes_alpha_player=pooled_alpha,
+        passes_alpha_team=0.03,
+        passes_alpha_by_position=alpha_by_group,
+    )
+
+    pooled_results, _ = simulate_completed_fixtures(
+        feature_rows,
+        models,
+        config=SimulationConfig(
+            n_sims=1500, seed=89, player_dispersion_targets=("passes_total",)
+        ),
+    )
+    by_position_results, _ = simulate_completed_fixtures(
+        feature_rows,
+        models,
+        config=SimulationConfig(
+            n_sims=1500,
+            seed=89,
+            player_dispersion_targets=("passes_total",),
+            player_dispersion_by_position=True,
+        ),
+    )
+
+    pooled_cov = (
+        score_simulation_backtest(pooled_results, feature_rows)["player_coverage"]
+        .set_index("target_event")
+    )
+    by_position_cov = (
+        score_simulation_backtest(by_position_results, feature_rows)["player_coverage"]
+        .set_index("target_event")
+    )
+
+    # Pooled alpha leaves the PIT visibly non-uniform in this world...
+    assert pooled_cov.loc["passes_total", "pit_max_abs_deviation"] > 0.10
+    # ...while the per-position refinement restores calibration.
+    assert by_position_cov.loc["passes_total", "pit_max_abs_deviation"] < 0.08
+    assert 0.74 <= by_position_cov.loc["passes_total", "coverage"] <= 0.95
+    # A strict improvement, and unrelated targets stay calibrated.
+    assert (
+        by_position_cov.loc["passes_total", "pit_max_abs_deviation"]
+        < pooled_cov.loc["passes_total", "pit_max_abs_deviation"] - 0.03
+    )
+    assert 0.78 <= by_position_cov.loc["shots_total", "coverage"] <= 0.99
 
 
 def test_backtest_skips_fixtures_without_full_lineups():

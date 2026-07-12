@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 
@@ -53,7 +53,10 @@ class LoadedEventModel:
 
     ``alpha_player``/``alpha_team`` are the M1 negative-binomial dispersions
     read from the registered version's tags; 0.0 (pre-M1 versions) means
-    Poisson.
+    Poisson. ``alpha_player_by_position`` (FA-109) maps position-group codes
+    ('G'/'D'/'M'/'F') to group-specific player dispersions; empty on versions
+    predating the per-group fit, in which case consumers use the pooled
+    ``alpha_player``.
     """
 
     target_event: str
@@ -65,6 +68,7 @@ class LoadedEventModel:
     goalkeeper_only: bool = False
     alpha_player: float = 0.0
     alpha_team: float = 0.0
+    alpha_player_by_position: Mapping[str, float] = field(default_factory=dict)
 
 
 def fixture_has_confirmed_starting_xi(feature_rows: pd.DataFrame) -> bool:
@@ -276,12 +280,14 @@ def load_registered_event_models(
         if artifact["self_contained"]:
             alpha_player = artifact["alpha_player"]
             alpha_team = artifact["alpha_team"]
+            alpha_player_by_position = artifact["alpha_player_by_position"]
         else:
             # Pre-M2 raw boosters: dispersion tags set by M1 registrations;
             # absent on pre-M1 versions, which keep exact Poisson behavior.
             version_tags = client.get_model_version(model_name, str(version)).tags or {}
             alpha_player = _tag_float(version_tags, "alpha_player")
             alpha_team = _tag_float(version_tags, "alpha_team")
+            alpha_player_by_position = _position_alpha_tags(version_tags)
         models.append(LoadedEventModel(
             target_event=target,
             booster=artifact["booster"],
@@ -292,6 +298,7 @@ def load_registered_event_models(
             goalkeeper_only=artifact["goalkeeper_only"],
             alpha_player=alpha_player,
             alpha_team=alpha_team,
+            alpha_player_by_position=alpha_player_by_position,
         ))
     return models
 
@@ -318,6 +325,13 @@ def load_event_model_artifact(model_uri: str, *, target_event: str) -> dict[str,
             "goalkeeper_only": bool(inner.goalkeeper_only),
             "alpha_player": float(inner.alpha_player),
             "alpha_team": float(inner.alpha_team),
+            # getattr: pyfunc pickles registered before FA-109 lack the field.
+            "alpha_player_by_position": {
+                str(group).upper(): float(alpha)
+                for group, alpha in (
+                    getattr(inner, "alpha_player_by_position", {}) or {}
+                ).items()
+            },
             "self_contained": True,
         }
     except Exception:
@@ -337,18 +351,36 @@ def _tag_float(tags: Mapping[str, str], name: str, default: float = 0.0) -> floa
         return default
 
 
+# FA-109 per-position dispersion tag suffixes (business_logic.md §2 groups).
+_POSITION_GROUP_CODES = ("G", "D", "M", "F")
+
+
+def _position_alpha_tags(tags: Mapping[str, str]) -> dict[str, float]:
+    """Parses alpha_player_g/d/m/f version tags into {'G': alpha, ...}."""
+
+    out: dict[str, float] = {}
+    for code in _POSITION_GROUP_CODES:
+        name = f"alpha_player_{code.lower()}"
+        if name in tags:
+            out[code] = _tag_float(tags, name)
+    return out
+
+
 def load_dispersion_tags(
     model_versions: Mapping[str, tuple[str, str]],
     *,
     client: Any = None,
     tag_names: Sequence[str] = ("alpha_team", "alpha_player"),
-) -> dict[str, dict[str, float]]:
+) -> dict[str, Any]:
     """Reads NB dispersion tags for the given {target: (name, version)} map.
 
     This is the simulator's cheap dispersion read path (M1/N1, extended for
-    FA-108): one registry call per model version covers every requested tag,
-    no model artifacts are loaded. Targets whose tags are missing or
-    unreadable fall back to 0.0 (Poisson). Returns ``{tag: {target: alpha}}``.
+    FA-108/FA-109): one registry call per model version covers every
+    requested tag, no model artifacts are loaded. Targets whose tags are
+    missing or unreadable fall back to 0.0 (Poisson). Returns
+    ``{tag: {target: alpha}}`` plus ``"alpha_player_by_position"``:
+    ``{target: {group_code: alpha}}`` (empty per target on versions
+    predating the FA-109 per-group fit).
     """
 
     if client is None:
@@ -358,7 +390,8 @@ def load_dispersion_tags(
         mlflow.set_registry_uri("databricks-uc")
         client = MlflowClient()
 
-    alphas: dict[str, dict[str, float]] = {name: {} for name in tag_names}
+    alphas: dict[str, Any] = {name: {} for name in tag_names}
+    alphas["alpha_player_by_position"] = {}
     for target, (model_name, model_version) in model_versions.items():
         try:
             tags = client.get_model_version(model_name, str(model_version)).tags or {}
@@ -366,6 +399,7 @@ def load_dispersion_tags(
             tags = {}
         for name in tag_names:
             alphas[name][str(target)] = _tag_float(tags, name)
+        alphas["alpha_player_by_position"][str(target)] = _position_alpha_tags(tags)
     return alphas
 
 
