@@ -36,6 +36,25 @@ same exposure-offset Poisson LightGBM as the volume targets. Rationale:
   `cards_red` and `cards_yellow`, and a zero-inflated or hurdle variant for
   `goals_total`/`goals_assists` if calibration plots show systematic bias.
 
+#### M4/F-1 decision (2026-07-12): Poisson/NB kept — no hurdle for any target
+
+The pre-committed rule (ml_upgrade_backlog M4): keep NB when `p_ge_1` ECE
+≤ 0.02. Measured on the L2 rolling-origin backtest (3 folds, FA-104 feature
+set, serving-parity-verified rows) and corroborated by the FA-107 retrain
+validation split:
+
+| target | ece_ge_1, backtest cross-fold mean | ece_ge_1, retrain split |
+| --- | --- | --- |
+| cards_red | 0.0005 | 0.0003 |
+| goals_assists | 0.0044 | 0.0039 |
+| goals_total | 0.0066 | 0.0028 |
+| cards_yellow | 0.0098 | 0.0106 |
+
+All four pass with at least 2× headroom, so the calibration concern this
+ADR flagged is answered by measurement: the exposure-offset Poisson mean +
+NB dispersion stack stays. Revisit only if the live calibration monitor
+(`mon_football__prediction_calibration`) shows systematic direction.
+
 ### Position-group-specific models — deferred for v1
 
 One model per target across all positions, with position signal carried by

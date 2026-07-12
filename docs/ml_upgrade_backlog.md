@@ -238,7 +238,7 @@ Inputs are the **active prediction set** (`pred_football__player_event_predictio
   - Adoption gate: tuned params replace defaults only for targets where cross-fold mean RPS improves and its std does not blow up (record the comparison table in ticket notes).
 - **Implementation notes:** tuning core in `ml_training.py` (`tune_target_hyperparameters` + lean `cross_fold_rps` objective that skips the full metric suite per trial; unlearnable targets return `inf` so trials are rejected). The adoption gate is **stored in the artifact** (`adopted: true/false` with tuned-vs-default RPS on identical folds) and `load_tuned_configs` only returns adopted entries, so training never re-derives the decision. `train_poisson_lightgbm_with_mlflow` gained `per_target_configs` (per-target override logged as `{target}_config` param). `business_logic.md` §18 repo map to be updated with `scripts/tune_lgbm.py` when the first tuned configs land. ⚠️ The actual tuning run needs Databricks data + the `tuning` extra (optuna not installed locally); run `scripts/tune_lgbm.py` there and commit the resulting `config/lgbm_params/*.json` with the comparison table here.
 
-### M4. Sparse-target decision: hurdle / calibrated classifier (ADR 0003 follow-up) — ⏳ BLOCKED ON DATA (2026-07-07, machinery ready)
+### M4. Sparse-target decision: hurdle / calibrated classifier (ADR 0003 follow-up) — ✅ DONE (2026-07-12: rule applied, NB kept for all four targets; numbers in ADR 0003)
 - **Files:** decision + implementation if adopted: `football_analytics/ml_training.py`, `docs/adr/0003-sparse-target-handling.md` (supersede if adopted).
 - **Depends on:** L2, L3 (needs the calibration evidence ADR 0003 asked for), M1.
 - **Acceptance criteria:**
@@ -348,7 +348,7 @@ Produces a full simulated game per fixture: per-player counts for all 11 events 
 
 | # | Item | Command / entry point | Done-when |
 | --- | --- | --- | --- |
-| F-1 | M4 sparse-target decision run | `scripts/train_poisson_lgbm.py --backtest --targets cards_yellow,cards_red,goals_total,goals_assists` | Rule applied, ADR 0003 updated with numbers; hurdle built only for failing targets |
+| F-1 ✅ 2026-07-12 | M4 sparse-target decision run | `scripts/train_poisson_lgbm.py --backtest --targets cards_yellow,cards_red,goals_total,goals_assists` | Rule applied via the FA-104 backtest evidence: all four targets pass ECE ≤ 0.02 with ≥ 2× headroom; NB kept, no hurdles; ADR 0003 updated with the table |
 | F-2 | ~~Assist-per-goal rate calibration (N3)~~ | ✅ DONE 2026-07-07 — measured 0.688, default updated | — |
 | F-3 ✅ 2026-07-11 | Simulation holdout backtest run (N6) | `scripts/backtest_simulation.py --season <latest completed>` | Done via prediction_quality_backlog FA-106: numbers in N6 notes + FA-106 notes; ADR 0005 triggers evaluated (passes_total hit; goal anchor rejected) |
 | F-4 | Hyperparameter tuning run (M3) | `scripts/tune_lgbm.py` on Databricks with the `tuning` extra | Adopted `config/lgbm_params/*.json` committed with the comparison table |
