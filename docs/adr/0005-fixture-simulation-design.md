@@ -219,6 +219,19 @@ PIT to 0.064. Real-data adoption needs versions registered post-FA-109
 (per-group tags) plus an N6 revalidation run; the trigger closes only when
 the holdout PIT lands under ~0.08.
 
+**FA-109 outcome (2026-07-12): NOT ADOPTED — hypothesis falsified.** The
+N6 revalidation on per-group-tagged versions measured passes 0.708 / PIT
+0.141 vs the pooled arm's 0.710 / 0.139 (noise). The fitted per-group
+passes alphas are near-identical (pooled 0.094; D 0.096, M 0.096, F 0.082,
+G 0.053): conditional on the model's mean, passes dispersion is
+role-homogeneous, so no alpha mix can repair the PIT. The flag stays off;
+the machinery remains (digest-gated). **The passes trigger stays open**,
+now with role heterogeneity ruled out — the residual is structure outside
+the NB-mixture family, most plausibly within-match tempo/game-state
+covariance (v1 simplifications 1 and 3 above, which carry their own
+revisit triggers). Any further attempt needs dedicated evidence (start
+with the PIT-bin shape in the N6 artifacts), not another dispersion knob.
+
 ## Output
 
 `gold.sim_football__fixture_simulation` — grain `fixture_id / sim_set_id /
