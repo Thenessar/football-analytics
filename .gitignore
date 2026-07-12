@@ -91,9 +91,12 @@ output/
 *.parquet
 *.pdf
 
-# Ignore JSON files except the primary tournament cache database
+# Ignore JSON files except the primary tournament cache database and the
+# version-controlled tuned LightGBM configs (ml_upgrade_backlog F-4 requires
+# adopted per-target params to be committed).
 *.json
 !world_cup_2026_completed_data.json
+!config/lgbm_params/*.json
 
 # Local profiles config
 dbt/profiles.yml

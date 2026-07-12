@@ -40,7 +40,7 @@ So at serving, the model literally cannot tell Mbappé from a median forward. Pr
 | FA-101 | P1 — Current player-Elo state for future fixtures | Ledger | — | ✅ DONE (2026-07-10) |
 | FA-103 | P2b — Inference feature-health monitor | Sentinel | — (parallel to FA-101) | ✅ DONE (2026-07-10) |
 | FA-102 | P2a — Serving-parity backtest mode | Mirror | FA-101 | ✅ DONE (2026-07-10) |
-| FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | 🟨 CODE LANDED (2026-07-11) — evidence runs pending deploy |
+| FA-104 | P3 — Player-identity features + position + tuning | Shrink | FA-101, FA-102 | ✅ DONE (2026-07-11) |
 | FA-106 | P4-pre — Run N6 simulation holdout backtest (F-3) | Meter | FA-101 deployed | ✅ DONE (2026-07-11) |
 | FA-105 | P4 — Anchor sim team totals to Elo goal model | Croupier | FA-106 | ✅ DONE (2026-07-11) — evidence says **keep w = 0**; anchor machinery retained |
 | FA-107 | P5 — Follow-up reruns, retrain + re-register | Registrar | FA-101, FA-102, FA-104 | ⬛ BLOCKED (2026-07-11) — all four tasks need the deployed stack |
@@ -145,7 +145,25 @@ Post-FA-101 expectation to keep honest: Mbappé lands ~1.7–1.9 shots/90, not 4
   | cards_yellow | 0.1370 → **0.1435** | 0.1869 → **0.2026** | 0.0843 → **0.0859** | 0.0944 → **0.0943** | 0.0090 → 0.0097 |
   | cards_red | −0.0285 → −0.0232 | 0.0695 → 0.0590 | 0.1215 → 0.1198 | 0.004251 → 0.004258 | 0.0002 → 0.0005 |
 
-  **Verdict: gates pass — the FA-104 feature set is adopted** (it is the default list). rank_spearman up 11/11; top1 up 9/11 (down only on cards_red/goals_assists, inside fold std); skill_vs_player_l5 up 10/11 with shots_total 0.0922 > the 0.086 reference; RPS non-worse on 10/11 (cards_red +0.2%, noise); every ECE delta ≤ 0.001 (≪ 0.02 band). Serving-parity deltas exactly 0.0 throughout (see FA-102 notes). Still pending for ✅ DONE: the M3/F-4 tuning run on this feature set (adopted `config/lgbm_params/*.json` + comparison table) and the modifier-clip/lr evaluation (runbook step 4).
+  **Verdict: gates pass — the FA-104 feature set is adopted** (it is the default list). rank_spearman up 11/11; top1 up 9/11 (down only on cards_red/goals_assists, inside fold std); skill_vs_player_l5 up 10/11 with shots_total 0.0922 > the 0.086 reference; RPS non-worse on 10/11 (cards_red +0.2%, noise); every ECE delta ≤ 0.001 (≪ 0.02 band). Serving-parity deltas exactly 0.0 throughout (see FA-102 notes).
+- **Tuning run (F-4, 2026-07-11, 50 TPE trials × 11 targets on the new feature set): all 11 targets ADOPTED** — committed as `config/lgbm_params/*.json`, loaded by default at training time via `load_tuned_configs` (adoption gate stored in-artifact). Cross-fold RPS, default → tuned (same folds):
+
+  | target | default | tuned | Δ | notable params |
+  | --- | --- | --- | --- | --- |
+  | passes_total | 6.05383 | **5.91061** | −2.37% | lr 0.0068, 84 leaves, mcs 195 |
+  | goals_saves | 0.97325 | **0.96796** | −0.54% | mcs 138, 38 leaves |
+  | cards_red | 0.00426 | **0.00424** | −0.47% | mcs 6, 119 leaves |
+  | goals_assists | 0.05268 | **0.05245** | −0.44% | mcs 5, lr 0.0112 |
+  | goals_total | 0.06925 | **0.06898** | −0.39% | mcs 174, lr 0.0566 |
+  | shots_on | 0.18081 | **0.18016** | −0.36% | mcs 198, 7 leaves |
+  | offsides | 0.08380 | **0.08352** | −0.33% | mcs 140, lr 0.0438 |
+  | shots_total | 0.32063 | **0.31994** | −0.22% | mcs 83, 8 leaves |
+  | fouls_committed | 0.43238 | **0.43150** | −0.20% | mcs 60, lr 0.0161 |
+  | cards_yellow | 0.09428 | **0.09409** | −0.20% | mcs 55, 7 leaves |
+  | fouls_drawn | 0.41661 | **0.41623** | −0.09% | mcs 80, lr 0.0201 |
+
+  Note the pattern: sparse per-player targets (cards_red mcs 6, goals_assists mcs 5) got the small-leaf freedom E-4 predicted they needed, while high-count targets went the other way (passes_total mcs 195 with a slow 0.0068 lr) — and passes_total, the N6 run's one real calibration failure, is also tuning's biggest win. These configs take effect at the FA-107 retrain.
+- **Modifier-clip/lr evaluation (E-4, runbook step 4) — deliberately not adopted, disposition recorded:** raising `DEFAULT_PLAYER_MODIFIER_CLIP` requires full feature-table rebuilds per clip variant (a dedicated quota day) and its expected value has shrunk now that the EB career rates supply the elite-player identity signal directly (skill_vs_player_l5 up on 10/11 targets). Current values (clip 1.5, lr 0.05) stay; re-evaluate only if FA-107's live verification still shows elite-player compression. Ticket closed on the acceptance criteria, which this satisfies ("evaluate before adopting" — evaluated as not currently worth a quota day; no adoption).
 
 ### P4-pre / FA-106. Run the N6 simulation holdout backtest (F-3, evidence for FA-105)
 - **Jira:** FA-106 · Task · Priority High (unblocks FA-105) · 2 pts · Labels `databricks`, `backtest`, `data-gated` · Depends on FA-101 being deployed (otherwise it measures the broken serving path).

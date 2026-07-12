@@ -1,0 +1,18 @@
+{
+  "adopted": true,
+  "cross_fold_rps_default": 0.06925427240378436,
+  "cross_fold_rps_tuned": 0.06897977538810586,
+  "early_stopping_rounds": 50,
+  "min_train_seasons": 2,
+  "n_trials": 50,
+  "num_boost_round": 1200,
+  "params": {
+    "bagging_fraction": 0.5311885205036176,
+    "feature_fraction": 0.978574740230781,
+    "lambda_l2": 1.8378107119283884e-05,
+    "learning_rate": 0.05659580050860476,
+    "min_child_samples": 174,
+    "num_leaves": 7
+  },
+  "target": "goals_total"
+}

@@ -1,0 +1,18 @@
+{
+  "adopted": true,
+  "cross_fold_rps_default": 0.4323787192581312,
+  "cross_fold_rps_tuned": 0.4314993808213375,
+  "early_stopping_rounds": 50,
+  "min_train_seasons": 2,
+  "n_trials": 50,
+  "num_boost_round": 1200,
+  "params": {
+    "bagging_fraction": 0.53595322240441,
+    "feature_fraction": 0.7014032088964437,
+    "lambda_l2": 0.00015867664429718972,
+    "learning_rate": 0.01610574251193207,
+    "min_child_samples": 60,
+    "num_leaves": 7
+  },
+  "target": "fouls_committed"
+}

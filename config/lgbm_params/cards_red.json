@@ -1,0 +1,18 @@
+{
+  "adopted": true,
+  "cross_fold_rps_default": 0.00425821814710534,
+  "cross_fold_rps_tuned": 0.004243920196770712,
+  "early_stopping_rounds": 50,
+  "min_train_seasons": 2,
+  "n_trials": 50,
+  "num_boost_round": 1200,
+  "params": {
+    "bagging_fraction": 0.6692660240221221,
+    "feature_fraction": 0.5249116684336296,
+    "lambda_l2": 4.3256915641403407e-07,
+    "learning_rate": 0.0216283945148337,
+    "min_child_samples": 6,
+    "num_leaves": 119
+  },
+  "target": "cards_red"
+}
