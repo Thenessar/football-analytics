@@ -62,12 +62,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--player-dispersion-targets",
-        default="",
+        default="passes_total",
         help=(
             "FA-108 per-player allocation dispersion: comma-separated volume "
-            "targets (e.g. 'passes_total'). Empty = off (v1 allocation); run "
-            "the N6 re-run with and without 'passes_total' to produce the "
-            "adoption evidence for the passes coverage fix."
+            "targets. Default matches production ('passes_total', adopted "
+            "2026-07-12 on the N6 three-arm evidence); pass '' to reproduce "
+            "the v1 allocation."
         ),
     )
     return parser.parse_args()

@@ -193,6 +193,23 @@ honoring the measured `alpha_team` contract from M1.
   ~0.92× the naive `μ + α·μ²` target (the (1−share)² factor) — immaterial
   at N6 tolerances.
 
+**Outcome (2026-07-12): ADOPTED for `passes_total` on three-arm N6 evidence
+— with the calibration trigger left OPEN.** Passes player coverage at 0.80
+nominal: 0.581 (old models, layer off) → 0.609 (retrained models, layer
+off) → **0.710** (retrained models, layer on); PIT max deviation 0.189 →
+0.189 → **0.139**; every other target byte-identical between the isolated
+arms. The layer is a strict improvement with cleanly attributed gains and
+zero cost, but the pre-committed PIT gate (< ~0.08) is unmet — adoption was
+a recorded dominance decision (running production on the strictly-worse
+configuration serves nobody), not a passed gate. The passes trigger
+therefore stays open: the residual miscalibration is structure a single
+global `α_player` cannot express (role heterogeneity across GK/D/M/F
+passes profiles); the follow-up is per-position-group `α_player` (M1-style
+fit, per-group version tags), revalidated by another N6 arm and closed only
+when PIT lands under ~0.08. Defaults flipped at the deployment layer
+(notebook 05 widget, backtest CLI); `SimulationConfig` stays engine-neutral
+with `player_dispersion_targets = ()`.
+
 ## Output
 
 `gold.sim_football__fixture_simulation` — grain `fixture_id / sim_set_id /

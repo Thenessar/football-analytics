@@ -33,9 +33,11 @@ dbutils.widgets.text("n_sims", "10000")
 dbutils.widgets.text("seed", "7")
 # FA-105 Elo goal anchor blend weight; 0.0 = disabled until FA-106 fits it.
 dbutils.widgets.text("team_goal_anchor_weight", "0.0")
-# FA-108 per-player allocation dispersion; comma-separated volume targets
-# (e.g. "passes_total"). Empty = disabled until the N6 re-run validates it.
-dbutils.widgets.text("player_dispersion_targets", "")
+# FA-108 per-player allocation dispersion; comma-separated volume targets.
+# Default "passes_total": adopted 2026-07-12 on the N6 three-arm evidence
+# (coverage 0.609 -> 0.710 at 0.80 nominal, PIT 0.189 -> 0.139, zero cost
+# elsewhere). Set to "" to reproduce the v1 allocation.
+dbutils.widgets.text("player_dispersion_targets", "passes_total")
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("catalog", "football_analytics")
 dbutils.widgets.text("bronze_schema", "bronze")
